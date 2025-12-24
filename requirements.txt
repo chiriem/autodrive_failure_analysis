@@ -4,3 +4,4 @@ polars
 numpy
 statsmodels
 vega_datasets
+openai
