@@ -17,6 +17,7 @@ def generate_autonomous_data(n=1000):
     
     # Generate base data
     weather = np.random.choice(weather_opts, n)
+    time_of_day = np.random.choice(["Day", "Night"], n, p=[0.7, 0.3])
     white_line_present = np.random.choice([True, False], n, p=[0.9, 0.1]) # 90% frames have lines
     
     # Simulate Confidence and IoU (correlated but with noise)
@@ -26,12 +27,19 @@ def generate_autonomous_data(n=1000):
     
     # Inject Failures: White line exists, but low confidence/IoU (e.g., in Snowy/Rainy)
     mask_failure = (weather == "Snowy") | (weather == "Rainy")
+    mask_night = (time_of_day == "Night")
+
     confidence[mask_failure] = confidence[mask_failure] * 0.6
     iou[mask_failure] = iou[mask_failure] * 0.5
+    
+    # Additional penalty for Night
+    confidence[mask_night] = confidence[mask_night] * 0.9
+    iou[mask_night] = iou[mask_night] * 0.85
 
     df = pl.DataFrame({
         "Frame ID": [f"frame_{i:05d}" for i in range(n)],
         "Weather": weather,
+        "Time of Day": time_of_day,
         "White Line Present": white_line_present,
         "Model Confidence": confidence,
         "IoU Score": iou,
@@ -69,6 +77,7 @@ COLUMN_CONFIG = {
     ),
     "Processing Time (ms)": st.column_config.NumberColumn(format="%.1f ms"),
     "Weather": st.column_config.TextColumn(),
+    "Time of Day": st.column_config.TextColumn(),
     "White Line Present": st.column_config.CheckboxColumn(),
     "Status": st.column_config.TextColumn(
         width="medium",
@@ -556,7 +565,69 @@ with wide_centered_layout():
     st.space("large")
 
     """
-    ## Part IV: Browse Full Log Data
+    ## Part IV: Day vs Night Failure Analysis
+
+    **주간(Day)과 야간(Night)의 자율주행 실패율 비교**
+    
+    IoU Score가 50점 미만인 경우를 '실패'로 간주하여 시간대별 실패율을 분석합니다.
+    """
+
+    with st.container(width=TEXT_WIDTH):
+        failure_threshold = 50
+        
+        day_night_stats = (
+            df.filter(pl.col("White Line Present") == True)
+            .with_columns(
+                (pl.col("IoU Score") < failure_threshold).alias("is_failure")
+            )
+            .group_by("Time of Day")
+            .agg(
+                [
+                    pl.len().alias("total"),
+                    pl.col("is_failure").sum().alias("failures")
+                ]
+            )
+            .with_columns(
+                (pl.col("failures") / pl.col("total") * 100).alias("failure_rate")
+            )
+        )
+
+        # Calculate difference for explanation
+        day_data = day_night_stats.filter(pl.col("Time of Day") == "Day")
+        night_data = day_night_stats.filter(pl.col("Time of Day") == "Night")
+        
+        day_rate = day_data["failure_rate"][0] if not day_data.is_empty() else 0.0
+        night_rate = night_data["failure_rate"][0] if not night_data.is_empty() else 0.0
+        diff = night_rate - day_rate
+
+        st.metric(
+            label="야간 vs 주간 실패율 차이",
+            value=f"{diff:+.1f}%p",
+            delta=f"야간 실패율 {night_rate:.1f}% (주간 {day_rate:.1f}%)",
+            delta_color="inverse"
+        )
+
+        if diff > 0:
+            st.info(f"💡 **분석 결과**: 야간 주행 시 차선 인식 실패 확률이 주간보다 **{diff:.1f}% 포인트** 더 높습니다.")
+        else:
+            st.success(f"💡 **분석 결과**: 야간 주행 성능이 주간과 비슷하거나 더 우수합니다.")
+
+        dn_chart = (
+            alt.Chart(day_night_stats)
+            .mark_bar()
+            .encode(
+                x=alt.X("Time of Day", axis=alt.Axis(title="Time of Day")),
+                y=alt.Y("failure_rate", axis=alt.Axis(title="Failure Rate (%)")),
+                color="Time of Day",
+                tooltip=["Time of Day", alt.Tooltip("failure_rate", format=".1f"), "failures", "total"]
+            )
+        )
+        st.altair_chart(dn_chart, use_container_width=True)
+
+    st.space("large")
+
+    """
+    ## Part V: Browse Full Log Data
     """
 
     st.space()
