@@ -609,7 +609,7 @@ with wide_centered_layout():
         )
 
         if diff > 0:
-            st.info(f"💡 **분석 결과**: 야간 주행 시 차선 인식 실패 확률이 주간보다 **{diff:.1f}% 포인트** 더 높습니다.")
+            st.info(f"💡 **분석 결과**: 야간 주행 시 차선 인식 실패 확률이 주간보다 **{diff:.1f}%** 더 높습니다. 이유는 낮은 밝기로 인해 카메라가 선을 인식하기 어려워졌기 때문으로 추측됩니다.")
         else:
             st.success(f"💡 **분석 결과**: 야간 주행 성능이 주간과 비슷하거나 더 우수합니다.")
 
@@ -651,7 +651,7 @@ with wide_centered_layout():
         """
         **데이터 분석 요약 및 질의응답**
         
-        OpenAI의 LLM을 활용하여 현재 데이터셋에 대한 심층적인 질문을 하거나 요약을 요청할 수 있습니다.
+        OpenAI의 LLM을 활용하여 현재 데이터셋에 대한 심층적인 질문을 하거나 요약을 요청할 수 있습니다. AI 답변은 시간이 다소 소요될 수 있습니다.
         """
 
         use_ai = st.checkbox("대화형 AI를 사용하시겠습니까?")
@@ -672,20 +672,25 @@ with wide_centered_layout():
                     st.session_state.messages.append({"role": "user", "content": prompt})
                     st.chat_message("user").write(prompt)
                     
-                    # Prepare Context from Data
                     # Convert Polars describe to string for the LLM context
                     data_summary = df.describe().to_pandas().to_string()
                     
-                    system_instruction = f"""You are an expert autonomous driving data analyst. 
-                    Here is the statistical summary of the current dataset:
+                    system_instruction = f"""당신은 자율주행 데이터 분석 전문가입니다. 
+                    다음은 현재 데이터셋의 통계 요약 정보입니다:
                     {data_summary}
+
+                    야간의 성능에 관련된 질문이 있을 경우, 낮은 밝기로 인해 카메라의 차선 인식률이 낮아지기 때문이라 대답해주세요.
                     
-                    The user is asking questions about this data. Answer based on the statistics provided.
-                    Keep the answer concise and professional. Answer in Korean."""
+                    사용자가 이 데이터에 대해 질문하면, 위 통계 정보들을 바탕으로 답변해 주세요.
+                    만약 사용자가 데이터와 무관한 질문을 한다면 대답을 거절하고 다시 질문을 요청하세요
+                    답변이 어려우면 일반적인 답변도 좋습니다.
+                    답변은 간결하고 전문적으로 작성해 주세요.
+                    사용자에게 권장을 하지 말아주세요.
+                    """
 
                     client = openai.OpenAI(api_key=openai_api_key)
                     response = client.chat.completions.create(
-                        model="gpt-3.5-turbo", 
+                        model="gpt-5-mini", 
                         messages=[{"role": "system", "content": system_instruction}] + st.session_state.messages
                     )
                     msg = response.choices[0].message.content
