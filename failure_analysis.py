@@ -4,6 +4,7 @@ from altair.datasets import data
 import polars as pl
 import numpy as np
 import statsmodels.api as sm
+import openai
 
 
 st.set_page_config(
@@ -637,3 +638,56 @@ with wide_centered_layout():
         height=SMALLPLOT_HEIGHT,
         column_config=COLUMN_CONFIG,
     )
+
+    # -----------------------------------------------------------------------------
+    # Part 6: AI Assistant
+
+    st.space("large")
+    st.divider()
+
+    with st.container(width=TEXT_WIDTH):
+        st.header("Part VI: AI Analysis Assistant")
+        
+        """
+        **데이터 분석 요약 및 질의응답**
+        
+        OpenAI의 LLM을 활용하여 현재 데이터셋에 대한 심층적인 질문을 하거나 요약을 요청할 수 있습니다.
+        """
+
+        use_ai = st.checkbox("대화형 AI를 사용하시겠습니까?")
+
+        if use_ai:
+            openai_api_key = st.text_input("OpenAI API Key", key="chatbot_api_key", type="password")
+            
+            if not openai_api_key:
+                st.info("AI 기능을 사용하려면 OpenAI API Key를 입력하세요.")
+            else:
+                if "messages" not in st.session_state:
+                    st.session_state["messages"] = [{"role": "assistant", "content": "안녕하세요! 현재 로드된 자율주행 데이터 분석 결과에 대해 궁금한 점이 있으신가요?"}]
+
+                for msg in st.session_state.messages:
+                    st.chat_message(msg["role"]).write(msg["content"])
+
+                if prompt := st.chat_input("질문을 입력하세요 (예: 야간 주행 시 실패율이 높은 이유는 무엇인가요?)"):
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.chat_message("user").write(prompt)
+                    
+                    # Prepare Context from Data
+                    # Convert Polars describe to string for the LLM context
+                    data_summary = df.describe().to_pandas().to_string()
+                    
+                    system_instruction = f"""You are an expert autonomous driving data analyst. 
+                    Here is the statistical summary of the current dataset:
+                    {data_summary}
+                    
+                    The user is asking questions about this data. Answer based on the statistics provided.
+                    Keep the answer concise and professional. Answer in Korean."""
+
+                    client = openai.OpenAI(api_key=openai_api_key)
+                    response = client.chat.completions.create(
+                        model="gpt-3.5-turbo", 
+                        messages=[{"role": "system", "content": system_instruction}] + st.session_state.messages
+                    )
+                    msg = response.choices[0].message.content
+                    st.session_state.messages.append({"role": "assistant", "content": msg})
+                    st.chat_message("assistant").write(msg)
