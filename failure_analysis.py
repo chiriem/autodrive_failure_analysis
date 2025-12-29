@@ -49,27 +49,27 @@ def generate_autonomous_data(n=1000):
     return df
 
 df = generate_autonomous_data()
-TITLE_COL = "Frame ID"
-IMDB_COL = "Model Confidence"  # 0-10 scale
-RT_COL = "IoU Score"           # 0-100 scale
-DIRECTOR_COL = "Weather"
+FRAME_COL = "Frame ID"
+CONFIDENCE_COL = "Model Confidence"  # 0-10 scale
+IOU_COL = "IoU Score"           # 0-100 scale
+WEATHER_COL = "Weather"
 HAS_RATINGS = pl.col("White Line Present") == True # Only analyze frames where line exists
 TEXT_WIDTH = 700
 SMALLPLOT_WIDTH = 500
 SMALLPLOT_HEIGHT = 500
 MARK_SIZE = 70
-DIRECTOR_MARK_SIZE = 150
+WEATHER_MARK_SIZE = 150
 
 COLUMN_CONFIG = {
-    TITLE_COL: st.column_config.TextColumn(pinned=True),
-    IMDB_COL: st.column_config.ProgressColumn(
+    FRAME_COL: st.column_config.TextColumn(pinned=True),
+    CONFIDENCE_COL: st.column_config.ProgressColumn(
         min_value=0,
         max_value=10,
         color="#f28e2b",
         format="compact",
         width=100,
     ),
-    RT_COL: st.column_config.ProgressColumn(
+    IOU_COL: st.column_config.ProgressColumn(
         min_value=0,
         max_value=100,
         color="#4e79a7",
@@ -84,9 +84,6 @@ COLUMN_CONFIG = {
         width="medium",
     ),
 }
-
-# -----------------------------------------------------------------------------
-# Helpful functions
 
 
 def draw_histogram(df, metric_name):
@@ -106,7 +103,7 @@ def draw_histogram(df, metric_name):
     )
 
 
-def draw_director_median_chart(title, data, x_col, y_col, x_domain, color_domain):
+def draw_weather_median_chart(title, data, x_col, y_col, x_domain, color_domain):
     data = data.drop_nulls(subset=[y_col])
 
     medians = (
@@ -121,11 +118,11 @@ def draw_director_median_chart(title, data, x_col, y_col, x_domain, color_domain
         alt.Y(f"{y_col}:N", sort=sort_order, title=None),
     )
 
-    points = base.mark_point(filled=True, size=DIRECTOR_MARK_SIZE).encode(
+    points = base.mark_point(filled=True, size=WEATHER_MARK_SIZE).encode(
         alt.X(f"{x_col}:Q", title=f"{x_col}").scale(zero=True, domain=x_domain),
-        alt.Color(DIRECTOR_COL, type="nominal").scale(domain=color_domain).legend(None),
-        alt.Shape(DIRECTOR_COL, type="nominal").scale(domain=color_domain).legend(None),
-        tooltip=[y_col, x_col, TITLE_COL],
+        alt.Color(WEATHER_COL, type="nominal").scale(domain=color_domain).legend(None),
+        alt.Shape(WEATHER_COL, type="nominal").scale(domain=color_domain).legend(None),
+        tooltip=[y_col, x_col, FRAME_COL],
     )
 
     ticks = (
@@ -254,14 +251,14 @@ with wide_centered_layout():
 
     rating_df = (
         df.filter(HAS_RATINGS)
-        .select(TITLE_COL, DIRECTOR_COL, IMDB_COL, RT_COL)
+        .select(FRAME_COL, WEATHER_COL, CONFIDENCE_COL, IOU_COL)
         .with_columns(
-            delta=pl.col(IMDB_COL) / 10 - pl.col(RT_COL) / 100,
+            delta=pl.col(CONFIDENCE_COL) / 10 - pl.col(IOU_COL) / 100,
         )
     )
 
     rating_model_df = perform_linear_regression(
-        rating_df, IMDB_COL, RT_COL, sigma_threshold=2
+        rating_df, CONFIDENCE_COL, IOU_COL, sigma_threshold=2
     )
 
     st.space()
@@ -275,22 +272,22 @@ with wide_centered_layout():
                 alt.Chart(rating_model_df)
                 .mark_point(filled=True, size=MARK_SIZE, opacity=0.5)
                 .encode(
-                    alt.X(IMDB_COL, type="quantitative"),
-                    alt.Y(RT_COL, type="quantitative"),
+                    alt.X(CONFIDENCE_COL, type="quantitative"),
+                    alt.Y(IOU_COL, type="quantitative"),
                     alt.Color("Status:N").legend(None),
                     alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-                    tooltip=[TITLE_COL, DIRECTOR_COL, IMDB_COL, RT_COL, "Status"],
+                    tooltip=[FRAME_COL, WEATHER_COL, CONFIDENCE_COL, IOU_COL, "Status"],
                 ),
                 height="stretch",
             )
 
         with cols[1]:
             st.space("medium")
-            draw_histogram(rating_df, IMDB_COL)
-            draw_histogram(rating_df, RT_COL)
+            draw_histogram(rating_df, CONFIDENCE_COL)
+            draw_histogram(rating_df, IOU_COL)
 
     diff_df = rating_df.filter(
-        pl.col(IMDB_COL).is_not_null() & pl.col(RT_COL).is_not_null()
+        pl.col(CONFIDENCE_COL).is_not_null() & pl.col(IOU_COL).is_not_null()
     ).sort(by="delta", descending=True)
 
     help_text = (
@@ -309,7 +306,7 @@ with wide_centered_layout():
         st.dataframe(
             diff_df.select(pl.exclude("delta"))
             .head(20)
-            .sort(by=IMDB_COL, descending=True),
+            .sort(by=CONFIDENCE_COL, descending=True),
             column_config=COLUMN_CONFIG,
             height="stretch",
         )
@@ -323,7 +320,7 @@ with wide_centered_layout():
         st.dataframe(
             diff_df.select(pl.exclude("delta"))
             .tail(20)
-            .sort(by=RT_COL, descending=True),
+            .sort(by=IOU_COL, descending=True),
             column_config=COLUMN_CONFIG,
             height="stretch",
         )
@@ -343,107 +340,115 @@ with wide_centered_layout():
         특정 날씨(예: Snowy, Rainy)에서 성능이 저하되는지 확인할 수 있습니다.
         """
 
-        min_movies = st.slider(
+        min_frames = st.slider(
             "Minimum frames per weather condition",
             min_value=1,
             max_value=50,
             value=10,
         )
 
-        director_df = rating_df.filter(pl.col(DIRECTOR_COL).is_not_null()).with_columns(
-            first_letter=pl.col(DIRECTOR_COL).str.head(1)
+        weather_df = rating_df.filter(pl.col(WEATHER_COL).is_not_null()).with_columns(
+            first_letter=pl.col(WEATHER_COL).str.head(1)
         )
 
-        director_medians_df = (
-            director_df.group_by(DIRECTOR_COL)
+        weather_medians_df = (
+            weather_df.group_by(WEATHER_COL)
             .agg(
                 **{
-                    "num_movies": pl.len(),
+                    "num_frames": pl.len(),
                     "first_letter": pl.col("first_letter").first(),
-                    IMDB_COL: pl.col(IMDB_COL).median(),
-                    RT_COL: pl.col(RT_COL).median(),
+                    CONFIDENCE_COL: pl.col(CONFIDENCE_COL).median(),
+                    IOU_COL: pl.col(IOU_COL).median(),
                 }
             )
-            .filter(pl.col("num_movies") >= min_movies)
+            .filter(pl.col("num_frames") >= min_frames)
         )
 
-        all_directors_list = director_medians_df.get_column(DIRECTOR_COL).to_list()
+        all_weather_list = weather_medians_df.get_column(WEATHER_COL).to_list()
 
         st.space()
 
         st.subheader("Performance by Weather Condition")
+        
+        base = alt.Chart(weather_medians_df).encode(
+            alt.X(f"{WEATHER_COL}:N", axis=alt.Axis(title="Weather", labelAngle=0), scale=alt.Scale(padding=0.2))
+        )
+
+        bar_iou = base.mark_bar(color="#4e79a7", size=30).encode(
+            alt.Y(IOU_COL, axis=alt.Axis(title="IoU Score", titleColor="#4e79a7")),
+            xOffset=alt.value(32),
+            tooltip=[WEATHER_COL, IOU_COL, "num_frames"],
+        )
+
+        bar_conf = base.mark_bar(color="#f28e2b", size=30).encode(
+            alt.Y(CONFIDENCE_COL, axis=alt.Axis(title="Model Confidence", titleColor="#f28e2b")),
+            xOffset=alt.value(64),
+            tooltip=[WEATHER_COL, CONFIDENCE_COL, "num_frames"],
+        )
+
         st.altair_chart(
-            alt.Chart(director_medians_df, height=SMALLPLOT_HEIGHT)
-            .mark_point(filled=True, size=DIRECTOR_MARK_SIZE)
-            .encode(
-                alt.X(IMDB_COL, type="quantitative"),
-                alt.Y(RT_COL, type="quantitative"),
-                alt.Color(DIRECTOR_COL, type="nominal")
-                .scale(domain=all_directors_list)
-                .legend(None),
-                alt.Shape(DIRECTOR_COL, type="nominal")
-                .scale(domain=all_directors_list)
-                .legend(None),
-                tooltip=[DIRECTOR_COL, IMDB_COL, RT_COL, "num_movies"],
-            )
+            alt.layer(bar_iou, bar_conf)
+            .resolve_scale(y="independent")
+            .properties(height=SMALLPLOT_HEIGHT),
+            use_container_width=True,
         )
 
     st.space()
 
     for i in range(2):
         if i == 0:
-            metric_name = IMDB_COL
-            director_medians_df = director_medians_df.filter(
-                pl.col(IMDB_COL).is_not_null()
+            metric_name = CONFIDENCE_COL
+            weather_medians_df = weather_medians_df.filter(
+                pl.col(CONFIDENCE_COL).is_not_null()
             )
             x_domain = [0, 10]
         else:
-            metric_name = RT_COL
-            director_medians_df = director_medians_df.filter(
-                pl.col(RT_COL).is_not_null()
+            metric_name = IOU_COL
+            weather_medians_df = weather_medians_df.filter(
+                pl.col(IOU_COL).is_not_null()
             )
             x_domain = [0, 100]
 
         cols = st.columns(2, border=True)
 
         with cols[0]:
-            top_directors_df = director_medians_df.sort(
+            top_weather_df = weather_medians_df.sort(
                 metric_name, descending=True
             ).head(10)
 
-            top_directors_set = set(top_directors_df.get_column(DIRECTOR_COL).to_list())
+            top_weather_set = set(top_weather_df.get_column(WEATHER_COL).to_list())
 
-            top_dir_df = director_df.filter(
-                pl.col(DIRECTOR_COL).is_in(top_directors_set)
+            top_w_df = weather_df.filter(
+                pl.col(WEATHER_COL).is_in(top_weather_set)
             )
 
-            draw_director_median_chart(
+            draw_weather_median_chart(
                 f"Best Conditions by {metric_name}",
-                data=top_dir_df,
+                data=top_w_df,
                 x_col=metric_name,
-                y_col=DIRECTOR_COL,
+                y_col=WEATHER_COL,
                 x_domain=x_domain,
-                color_domain=all_directors_list,
+                color_domain=all_weather_list,
             )
 
         with cols[1]:
-            bottom_directors_df = director_medians_df.sort(metric_name).head(10)
+            bottom_weather_df = weather_medians_df.sort(metric_name).head(10)
 
-            bottom_directors_set = set(
-                bottom_directors_df.get_column(DIRECTOR_COL).to_list()
+            bottom_weather_set = set(
+                bottom_weather_df.get_column(WEATHER_COL).to_list()
             )
 
-            bottom_dir_df = director_df.filter(
-                pl.col(DIRECTOR_COL).is_in(bottom_directors_set)
+            bottom_w_df = weather_df.filter(
+                pl.col(WEATHER_COL).is_in(bottom_weather_set)
             )
 
-            draw_director_median_chart(
+            draw_weather_median_chart(
                 f"Worst Conditions by {metric_name}",
-                data=bottom_dir_df,
+                data=bottom_w_df,
                 x_col=metric_name,
-                y_col=DIRECTOR_COL,
+                y_col=WEATHER_COL,
                 x_domain=x_domain,
-                color_domain=all_directors_list,
+                color_domain=all_weather_list,
             )
 
     # -----------------------------------------------------------------------------
@@ -506,7 +511,7 @@ with wide_centered_layout():
             model_df = perform_loess_regression(df, x_col, y_col, sigma_val)
 
         outliers = model_df.filter(pl.col("Status") == "Outlier").select(
-            TITLE_COL, DIRECTOR_COL, IMDB_COL, RT_COL
+            FRAME_COL, WEATHER_COL, CONFIDENCE_COL, IOU_COL
         )
         num_outliers = len(model_df.filter(pl.col("Status") == "Outlier"))
 
@@ -534,7 +539,7 @@ with wide_centered_layout():
                     "Status:N",
                 ).legend(None),
                 alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-                tooltip=[TITLE_COL, x_col, y_col],
+                tooltip=[FRAME_COL, x_col, y_col],
             )
 
             final_chart = (band + points + line).configure_legend(orient="bottom")
@@ -640,7 +645,6 @@ with wide_centered_layout():
     )
 
     # -----------------------------------------------------------------------------
-    # Part 6: AI Assistant
 
     st.space("large")
     st.divider()
@@ -678,7 +682,6 @@ with wide_centered_layout():
                     with chat_container:
                         st.chat_message("user").write(prompt)
                     
-                    # Convert Polars describe to string for the LLM context
                     data_summary = df.describe().to_pandas().to_string()
                     
                     system_instruction = f"""당신은 자율주행 데이터 분석 전문가입니다. 
