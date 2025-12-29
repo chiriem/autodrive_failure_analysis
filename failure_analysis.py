@@ -340,13 +340,6 @@ with wide_centered_layout():
         특정 날씨(예: Snowy, Rainy)에서 성능이 저하되는지 확인할 수 있습니다.
         """
 
-        min_frames = st.slider(
-            "Minimum frames per weather condition",
-            min_value=1,
-            max_value=50,
-            value=10,
-        )
-
         weather_df = rating_df.filter(pl.col(WEATHER_COL).is_not_null()).with_columns(
             first_letter=pl.col(WEATHER_COL).str.head(1)
         )
@@ -361,7 +354,6 @@ with wide_centered_layout():
                     IOU_COL: pl.col(IOU_COL).median(),
                 }
             )
-            .filter(pl.col("num_frames") >= min_frames)
         )
 
         all_weather_list = weather_medians_df.get_column(WEATHER_COL).to_list()
