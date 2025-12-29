@@ -177,49 +177,6 @@ def perform_linear_regression(df, x_col, y_col, sigma_threshold):
     return result_df
 
 
-def perform_loess_regression(df, x_col, y_col, sigma_threshold, frac=0.66):
-    """
-    Calculates LOESS regression, residuals, and outlier status using Polars and Statsmodels.
-
-    Args:
-        frac (float): The fraction of the data used when estimating each y-value.
-                      Between 0 and 1. Defaults to 0.66 (standard).
-    """
-    # Sorting by x_col is mandatory for LOESS to align predictions correctly for plotting
-    clean_df = df.drop_nulls([x_col, y_col]).sort(x_col)
-
-    x = clean_df[x_col].to_numpy()
-    y = clean_df[y_col].to_numpy()
-
-    # Returns an (n, 2) array: [sorted_x, fitted_y]
-    lowess_result = sm.nonparametric.lowess(y, x, frac=frac)
-
-    predictions = lowess_result[:, 1]
-
-    residuals = y - predictions
-    std_dev = np.std(residuals)
-
-    upper_bound = predictions + (sigma_threshold * std_dev)
-    lower_bound = predictions - (sigma_threshold * std_dev)
-
-    result_df = clean_df.with_columns(
-        [
-            pl.Series("Predicted", predictions),
-            pl.Series("Upper Bound", upper_bound),
-            pl.Series("Lower Bound", lower_bound),
-            pl.when(
-                (pl.col(y_col) > pl.Series(upper_bound))
-                | (pl.col(y_col) < pl.Series(lower_bound))
-            )
-            .then(pl.lit("Outlier"))
-            .otherwise(pl.lit("In Range"))
-            .alias("Status"),
-        ]
-    )
-
-    return result_df
-
-
 def wide_centered_layout():
     with st.container(horizontal_alignment="center"):
         return st.container(
@@ -239,6 +196,8 @@ with wide_centered_layout():
 
         """
         ## Part I: Detection Performance
+
+        **분석 대상: `over_confident_error`**
 
         **모델의 확신(Confidence)과 실제 정확도(IoU)의 관계는?**
         아래 분석에서 **Model Confidence**는 딥러닝 모델이 차선을 인식했다고 믿는 정도이며,
@@ -300,6 +259,7 @@ with wide_centered_layout():
     with cols[0]:
         st.subheader(
             "Over-confident Failures (False Positives)",
+            "Over-confident Failures (over_confident_error)",
             help=help_text,
         )
 
@@ -334,6 +294,8 @@ with wide_centered_layout():
         """
         ## Part II: Environmental Analysis (Weather)
 
+        **분석 대상: `low_iou`, `missed_detection`**
+
         **어떤 날씨 환경에서 인식이 가장 실패할까요?**
 
         아래 차트는 날씨(Weather)별로 Confidence와 IoU의 중앙값(Median) 분포를 보여줍니다.
@@ -366,22 +328,13 @@ with wide_centered_layout():
             alt.X(f"{WEATHER_COL}:N", axis=alt.Axis(title="Weather", labelAngle=0), scale=alt.Scale(padding=0.2))
         )
 
-        bar_iou = base.mark_bar(color="#4e79a7", size=30).encode(
+        bar_iou = base.mark_bar(color="#4e79a7").encode(
             alt.Y(IOU_COL, axis=alt.Axis(title="IoU Score", titleColor="#4e79a7")),
-            xOffset=alt.value(32),
             tooltip=[WEATHER_COL, IOU_COL, "num_frames"],
         )
 
-        bar_conf = base.mark_bar(color="#f28e2b", size=30).encode(
-            alt.Y(CONFIDENCE_COL, axis=alt.Axis(title="Model Confidence", titleColor="#f28e2b")),
-            xOffset=alt.value(64),
-            tooltip=[WEATHER_COL, CONFIDENCE_COL, "num_frames"],
-        )
-
         st.altair_chart(
-            alt.layer(bar_iou, bar_conf)
-            .resolve_scale(y="independent")
-            .properties(height=SMALLPLOT_HEIGHT),
+            bar_iou.properties(height=SMALLPLOT_HEIGHT),
             use_container_width=True,
         )
 
@@ -452,6 +405,8 @@ with wide_centered_layout():
         """
         ## Part III: Failure Prediction & Outliers
 
+        **분석 대상: `over_confident_error`, `low_iou`**
+
         **흰색 선을 인지하지 못하는 실패 케이스(Outlier) 탐지**
         회귀 분석을 통해 예상되는 성능 범위를 벗어나는 프레임을 찾습니다.
         특히 **흰색 선이 존재함에도 불구하고(Ground Truth)** 모델 수치가 낮은 경우를 집중적으로 확인하세요.
@@ -487,20 +442,11 @@ with wide_centered_layout():
             help="Determines the width of the confidence band. Points outside this band are outliers.",
         )
 
-        regression_type = st.segmented_control(
-            "Regression type",
-            ["Linear regression", "LOESS regression"],
-            default="Linear regression",
-        )
-
         if not x_col or not y_col:
             st.info("Please select columns to visualize.")
             st.stop()
 
-        if regression_type == "Linear regression":
-            model_df = perform_linear_regression(df, x_col, y_col, sigma_val)
-        else:
-            model_df = perform_loess_regression(df, x_col, y_col, sigma_val)
+        model_df = perform_linear_regression(df, x_col, y_col, sigma_val)
 
         outliers = model_df.filter(pl.col("Status") == "Outlier").select(
             FRAME_COL, WEATHER_COL, CONFIDENCE_COL, IOU_COL
@@ -565,6 +511,8 @@ with wide_centered_layout():
     """
     ## Part IV: Day vs Night Failure Analysis
 
+    **분석 대상: `low_iou`**
+
     **주간(Day)과 야간(Night)의 자율주행 실패율 비교**
     
     IoU Score가 50점 미만인 경우를 '실패'로 간주하여 시간대별 실패율을 분석합니다.
@@ -625,7 +573,66 @@ with wide_centered_layout():
     st.space("large")
 
     """
-    ## Part V: Browse Full Log Data
+    ## Part V: Failure Analysis Summary
+
+    **실패(Low IoU) 프레임 상위 20개의 공통점 및 처리 시간 분석**
+    """
+
+    with st.container(width=TEXT_WIDTH):
+        # 1. Top 20 Failures Summary
+        st.subheader("Top 20 Failure Cases Analysis")
+        
+        top_failures = df.filter(HAS_RATINGS).sort(IOU_COL).head(20)
+        
+        common_weather = top_failures.get_column(WEATHER_COL).mode().first()
+        common_time = top_failures.get_column("Time of Day").mode().first()
+        avg_proc_time = top_failures.get_column("Processing Time (ms)").mean()
+        avg_iou = top_failures.get_column(IOU_COL).mean()
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Most Common Weather", common_weather)
+        m2.metric("Most Common Time", common_time)
+        m3.metric("Avg Processing Time", f"{avg_proc_time:.1f} ms")
+        m4.metric("Avg IoU (Top 20)", f"{avg_iou:.1f}")
+        
+        st.caption("위 통계는 IoU가 가장 낮은 20개 프레임의 평균적인 특성입니다.")
+        
+        st.dataframe(
+            top_failures.select([FRAME_COL, WEATHER_COL, "Time of Day", "Processing Time (ms)", CONFIDENCE_COL, IOU_COL]),
+            column_config=COLUMN_CONFIG,
+            height=300
+        )
+
+        st.space()
+        
+        # 2. Processing Time Analysis
+        st.subheader("Processing Time vs Failure")
+        """
+        **처리 시간(Processing Time)이 실패에 미치는 영향**
+        실패한 프레임(IoU < 50)과 성공한 프레임의 처리 시간 분포를 비교합니다.
+        """
+        
+        proc_df = df.filter(HAS_RATINGS).with_columns(
+            pl.when(pl.col(IOU_COL) < 50)
+            .then(pl.lit("Failure"))
+            .otherwise(pl.lit("Success"))
+            .alias("Result")
+        )
+        
+        proc_chart = alt.Chart(proc_df).mark_boxplot().encode(
+            x=alt.X("Result:N", title="Result"),
+            y=alt.Y("Processing Time (ms):Q", scale=alt.Scale(zero=False)),
+            color=alt.Color("Result:N", legend=None)
+        ).properties(height=300)
+        
+        st.altair_chart(proc_chart, use_container_width=True)
+
+    # -----------------------------------------------------------------------------
+
+    st.space("large")
+
+    """
+    ## Part VI: Browse Full Log Data
     """
 
     st.space()
@@ -641,18 +648,20 @@ with wide_centered_layout():
     st.space("large")
     st.divider()
 
-    with st.container(width=TEXT_WIDTH):
-        st.header("Part VI: AI Analysis Assistant")
-        
-        """
-        **데이터 분석 요약 및 질의응답**
-        
-        OpenAI의 LLM을 활용하여 현재 데이터셋에 대한 심층적인 질문을 하거나 요약을 요청할 수 있습니다. AI 답변은 시간이 다소 소요될 수 있습니다.
-        """
+    use_ai = st.checkbox("대화형 AI를 사용하시겠습니까?")
 
-        use_ai = st.checkbox("대화형 AI를 사용하시겠습니까?")
+    if use_ai:
 
-        if use_ai:
+        with st.container(width=TEXT_WIDTH):
+            st.header("Ex Part: AI Analysis Assistant")
+            
+            """
+            **데이터 분석 요약 및 질의응답**
+            
+            OpenAI의 LLM을 활용하여 현재 데이터셋에 대한 심층적인 질문을 하거나 요약을 요청할 수 있습니다. AI 답변은 시간이 다소 소요될 수 있습니다.
+            """
+
+            
             if "OPEN_API_KEY" in st.secrets:
                 openai_api_key = st.secrets["OPEN_API_KEY"]
             else:
