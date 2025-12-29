@@ -1,0 +1,33 @@
+[theme]
+font = "'IBM Plex Sans':https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400;1,700&display=swap"
+headingFont = "'IBM Plex Serif':https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,600;0,700;1,400;1,600;1,700&display=swap"
+
+baseFontSize = 14
+
+headingFontSizes = ["3rem", "2rem", "1rem"]
+headingFontWeights = [700, 600, 600]
+
+showWidgetBorder = true
+
+primaryColor = "#0ea5e9"             # Tailwind Sky
+borderColor = "#e2e8f0"              # Tailwind Slate
+secondaryBackgroundColor = "#ffffff"
+
+greenColor = "#10b981"     # Tailwind Emerald
+redColor = "#f43f5e"       # Tailwind Rose
+blueColor = "#1c83e1"      # Streamlit Blue
+blueTextColor = "#1c83e1"  # Streamlit Blue
+greenTextColor = "#84cc16" # Tailwind Lime
+
+chartCategoricalColors = [
+    "#1c83e1", # Tailwind Blue
+    "#84cc16", # Tailwind Lime
+    "#f43f5e", # Tailwind Rose
+    "#10b981", # Tailwind Emerald
+    "#84cc16", # Tailwind Lime
+    "#f59e0b", # Tailwind Amber
+    "#2dd4bf", # Tailwind Teal
+    "#facc15", # Tailwind Yellow
+    "#8b5cf6", # Tailwind Violet
+    "#f97316", # Tailwind Orange
+]

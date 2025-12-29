@@ -1,0 +1,7 @@
+streamlit
+altair
+polars
+numpy
+statsmodels
+vega_datasets
+openai
