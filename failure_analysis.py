@@ -657,8 +657,10 @@ with wide_centered_layout():
         use_ai = st.checkbox("대화형 AI를 사용하시겠습니까?")
 
         if use_ai:
-            # openai_api_key = api_key.openai_api_key
-            openai_api_key = st.text_input("OpenAI API Key", key="chatbot_api_key", type="password")
+            if "OPEN_API_KEY" in st.secrets:
+                openai_api_key = st.secrets["OPEN_API_KEY"]
+            else:
+                openai_api_key = st.text_input("OpenAI API Key", key="chatbot_api_key", type="password")
             
             if not openai_api_key:
                 st.info("AI 기능을 사용하려면 OpenAI API Key를 입력하세요.")
@@ -686,7 +688,7 @@ with wide_centered_layout():
                     야간의 성능에 관련된 질문이 있을 경우, 낮은 밝기로 인해 카메라의 차선 인식률이 낮아지기 때문이라 대답해주세요.
                     
                     사용자가 이 데이터에 대해 질문하면, 위 통계 정보들을 바탕으로 답변해 주세요.
-                    만약 사용자가 데이터와 무관한 질문을 한다면 대답을 거절하고 다시 질문을 요청하세요
+                    만약 사용자가 데이터와 무관한 질문을 한다면 대답을 거절하고 다시 질문을 요청하세요.
                     답변이 어려우면 일반적인 답변도 좋습니다.
                     답변은 간결하고 전문적으로 작성해 주세요.
                     사용자에게 권장을 하지 말아주세요.
