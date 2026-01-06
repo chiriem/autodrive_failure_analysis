@@ -1,6 +1,5 @@
 import streamlit as st
 import altair as alt
-from altair.datasets import data
 import polars as pl
 import numpy as np
 import statsmodels.api as sm
