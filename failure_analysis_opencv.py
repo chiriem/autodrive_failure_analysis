@@ -17,9 +17,6 @@ MASK_RATIO_COL = "Mask White Ratio"    # 0~1 (white pixels / mask pixels) [REQUI
 ERROR_COL = "Lane Error"               # signed (e.g., pixels)
 ABS_ERROR_COL = "Abs Lane Error"
 
-LEFT_SPEED_COL = "Left Speed"          # optional
-RIGHT_SPEED_COL = "Right Speed"        # optional
-
 PROC_COL = "Processing Time (ms)"      # optional
 WEATHER_COL = "Weather"                # optional
 TOD_COL = "Time of Day"                # optional
@@ -62,18 +59,6 @@ def _standardize_columns(df: pl.DataFrame) -> pl.DataFrame:
         for c in ["error", "lane_error", "LaneError", "target_error", "center_error"]:
             if c in df.columns:
                 rename_map[c] = ERROR_COL
-                break
-
-    # Speeds
-    if LEFT_SPEED_COL not in df.columns:
-        for c in ["left_speed", "l_speed", "motor_left", "LeftMotor", "left_pwm"]:
-            if c in df.columns:
-                rename_map[c] = LEFT_SPEED_COL
-                break
-    if RIGHT_SPEED_COL not in df.columns:
-        for c in ["right_speed", "r_speed", "motor_right", "RightMotor", "right_pwm"]:
-            if c in df.columns:
-                rename_map[c] = RIGHT_SPEED_COL
                 break
 
     # Processing time
@@ -218,11 +203,6 @@ def _generate_demo(n: int = 1200) -> pl.DataFrame:
     abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
     err = abs_err * np.random.choice([-1, 1], n)
 
-    base_speed = 0.5
-    kp = 0.01
-    steer = err * kp
-    left_speed = np.clip(base_speed + steer, -1.0, 1.0)
-    right_speed = np.clip(base_speed - steer, -1.0, 1.0)
 
     proc = np.random.normal(28, 5, n)
     df = pl.DataFrame({
@@ -234,8 +214,6 @@ def _generate_demo(n: int = 1200) -> pl.DataFrame:
         QUALITY_COL: quality,
         ERROR_COL: err,
         PROC_COL: proc,
-        LEFT_SPEED_COL: left_speed,
-        RIGHT_SPEED_COL: right_speed,
     }).with_columns(pl.col(ERROR_COL).abs().alias(ABS_ERROR_COL))
     return df
 
@@ -275,8 +253,6 @@ COLUMN_CONFIG = {
     MASK_RATIO_COL: st.column_config.NumberColumn(format="%.4f"),
     ERROR_COL: st.column_config.NumberColumn(format="%.2f"),
     ABS_ERROR_COL: st.column_config.NumberColumn(format="%.2f"),
-    LEFT_SPEED_COL: st.column_config.NumberColumn(format="%.3f"),
-    RIGHT_SPEED_COL: st.column_config.NumberColumn(format="%.3f"),
     PROC_COL: st.column_config.NumberColumn(format="%.1f ms"),
     WEATHER_COL: st.column_config.TextColumn(),
     TOD_COL: st.column_config.TextColumn(),
@@ -287,7 +263,7 @@ COLUMN_CONFIG = {
 
 st.divider()
 st.subheader("Part 0: 컬럼/결측 확인")
-check_cols = [QUALITY_COL, MASK_RATIO_COL, ERROR_COL, LEFT_SPEED_COL, RIGHT_SPEED_COL, PROC_COL, WEATHER_COL, TOD_COL]
+check_cols = [QUALITY_COL, MASK_RATIO_COL, ERROR_COL, PROC_COL, WEATHER_COL, TOD_COL]
 st.dataframe(_describe_missing(df, check_cols), hide_index=True, use_container_width=True)
 
 # =============================================================================
@@ -469,7 +445,7 @@ st.divider()
 st.markdown("## Part IV: Outlier Explorer (회귀 기반)")
 
 numeric_cols = []
-for c in [QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL, LEFT_SPEED_COL, RIGHT_SPEED_COL]:
+for c in [QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL]:
     if c in df.columns and df[c].dtype in (pl.Int64, pl.Int32, pl.Float32, pl.Float64):
         numeric_cols.append(c)
 
@@ -528,7 +504,7 @@ else:
     mcols[3].metric("Avg Proc Time", "N/A")
 
 show = [FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL]
-for c in [ABS_ERROR_COL, PROC_COL, LEFT_SPEED_COL, RIGHT_SPEED_COL]:
+for c in [ABS_ERROR_COL, PROC_COL]:
     if c in top.columns:
         show.append(c)
 
