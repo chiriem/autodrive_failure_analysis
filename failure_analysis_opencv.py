@@ -8,7 +8,6 @@ st.set_page_config(page_title="실패분석", page_icon="🛣️", layout="wide"
 # =============================================================================
 # Canonical columns (you can rename your CSV columns to match, or rely on auto-rename)
 
-FRAME_COL = "Frame ID"                 # str/int
 TS_COL = "Timestamp"                   # optional (ms or ISO string)
 
 QUALITY_COL = "Lane Quality Score"     # 0~100 (higher is better)  [REQUIRED]
@@ -29,11 +28,6 @@ def _standardize_columns(df: pl.DataFrame) -> pl.DataFrame:
     rename_map = {}
 
     # Frame / timestamp
-    if FRAME_COL not in df.columns:
-        for c in ["frame_id", "frame", "Frame", "id", "index", "idx"]:
-            if c in df.columns:
-                rename_map[c] = FRAME_COL
-                break
     if TS_COL not in df.columns:
         for c in ["timestamp", "ts", "time", "t", "Time", "datetime"]:
             if c in df.columns:
@@ -87,10 +81,6 @@ def _standardize_columns(df: pl.DataFrame) -> pl.DataFrame:
 
 def _ensure_fields(df: pl.DataFrame) -> pl.DataFrame:
     """Fill convenience columns and sanitize ratio/quality ranges."""
-    # Frame fallback
-    if FRAME_COL not in df.columns:
-        df = df.with_row_index(name="__idx").with_columns(pl.col("__idx").alias(FRAME_COL)).drop("__idx")
-
     # Required columns check happens later, but we can sanitize if present:
     if QUALITY_COL in df.columns:
         df = df.with_columns(pl.col(QUALITY_COL).cast(pl.Float64).clip(0, 100))
@@ -178,8 +168,21 @@ def draw_histogram(df: pl.DataFrame, metric_name: str, bins: int = 20, height: i
 st.title("자율주행 실패 분석 (OpenCV 로그: Lane Quality + Mask Ratio 중심)")
 st.caption("YOLO Confidence/IoU 없이, 직접 계산한 Lane Quality Score / Mask White Ratio를 기준으로 분석합니다.")
 
-uploaded = st.file_uploader("주행 로그 CSV 업로드", type=["csv"])
-use_demo = st.toggle("데모 데이터 사용", value=(uploaded is None))
+if "uploader_count" not in st.session_state:
+    st.session_state.uploader_count = 1
+
+uploaded_files = []
+for i in range(st.session_state.uploader_count):
+    f = st.file_uploader(f"주행 로그 CSV 업로드 {i+1}", type=["csv"], key=f"uploader_{i}")
+    if f is not None:
+        uploaded_files.append(f)
+
+if st.session_state.uploader_count < 5:
+    if st.button("➕ CSV 추가 업로드 공간 만들기"):
+        st.session_state.uploader_count += 1
+        st.rerun()
+
+use_demo = st.toggle("데모 데이터 사용", value=(not uploaded_files))
 
 def _generate_demo(n: int = 1200) -> pl.DataFrame:
     np.random.seed(7)
@@ -206,7 +209,6 @@ def _generate_demo(n: int = 1200) -> pl.DataFrame:
 
     proc = np.random.normal(28, 5, n)
     df = pl.DataFrame({
-        FRAME_COL: np.arange(n),
         TS_COL: np.arange(n) * 100,  # ms
         WEATHER_COL: weather,
         TOD_COL: tod,
@@ -218,21 +220,32 @@ def _generate_demo(n: int = 1200) -> pl.DataFrame:
     return df
 
 
-if uploaded is not None:
-    try:
-        df = pl.read_csv(uploaded, infer_schema_length=1000)
-    except Exception as e:
-        st.error(f"CSV 로드 실패: {e}")
-        st.stop()
-else:
-    df = _generate_demo() if use_demo else pl.DataFrame()
+df = pl.DataFrame()
+if uploaded_files:
+    dfs = []
+    for f in uploaded_files:
+        try:
+            d = pl.read_csv(f, infer_schema_length=1000)
+            d = _standardize_columns(d)
+            d = _ensure_fields(d)
+            dfs.append(d)
+        except Exception as e:
+            st.error(f"CSV 로드 실패 ({f.name}): {e}")
+    
+    if dfs:
+        try:
+            df = pl.concat(dfs, how="diagonal")
+        except Exception as e:
+            st.error(f"파일 병합 실패: {e}")
+            st.stop()
+elif use_demo:
+    df = _generate_demo()
+    df = _standardize_columns(df)
+    df = _ensure_fields(df)
 
 if df.is_empty():
     st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
     st.stop()
-
-df = _standardize_columns(df)
-df = _ensure_fields(df)
 
 # Required checks
 missing = [c for c in [QUALITY_COL, MASK_RATIO_COL] if c not in df.columns]
@@ -247,7 +260,6 @@ if missing:
 
 # Column config
 COLUMN_CONFIG = {
-    FRAME_COL: st.column_config.TextColumn(pinned=True),
     TS_COL: st.column_config.TextColumn(),
     QUALITY_COL: st.column_config.ProgressColumn(min_value=0, max_value=100, format="compact", width=130),
     MASK_RATIO_COL: st.column_config.NumberColumn(format="%.4f"),
@@ -292,7 +304,7 @@ else:
                 y=alt.Y(ABS_ERROR_COL, type="quantitative", scale=alt.Scale(zero=True)),
                 color=alt.Color("Status:N").legend(None),
                 shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-                tooltip=[FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL, "Status"],
+                tooltip=[TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL, "Status"],
             )
             .properties(height=420),
             use_container_width=True,
@@ -308,7 +320,7 @@ else:
         st.caption("High-quality but high-error (제어/보정 의심)")
         st.dataframe(
             model_df.sort(ABS_ERROR_COL, descending=True).select(
-                [FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL] +
+                [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL] +
                 ([PROC_COL] if PROC_COL in model_df.columns else [])
             ).head(20),
             column_config=COLUMN_CONFIG,
@@ -319,7 +331,7 @@ else:
         st.caption("Low-quality frames (인식 품질 붕괴 의심)")
         st.dataframe(
             df.sort(QUALITY_COL).select(
-                [FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL] +
+                [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL] +
                 ([ABS_ERROR_COL] if ABS_ERROR_COL in df.columns else []) +
                 ([PROC_COL] if PROC_COL in df.columns else [])
             ).head(20),
@@ -346,7 +358,7 @@ with c1:
         .encode(
             x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
             y=alt.Y(QUALITY_COL, type="quantitative", scale=alt.Scale(domain=[0, 100])),
-            tooltip=[FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, QUALITY_COL],
+            tooltip=[TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, QUALITY_COL],
         )
         .properties(height=420),
         use_container_width=True,
@@ -471,13 +483,13 @@ else:
             y=alt.Y(y_col, scale=alt.Scale(zero=False)),
             color=alt.Color("Status:N").legend(None),
             shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-            tooltip=[FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, x_col, y_col, "Status"],
+            tooltip=[TS_COL, WEATHER_COL, TOD_COL, x_col, y_col, "Status"],
         ).properties(height=420),
         use_container_width=True,
     )
 
     st.subheader("Detected Outliers")
-    show_cols = [FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, x_col, y_col]
+    show_cols = [TS_COL, WEATHER_COL, TOD_COL, x_col, y_col]
     for extra in [QUALITY_COL, MASK_RATIO_COL, PROC_COL]:
         if extra in df.columns and extra not in show_cols:
             show_cols.append(extra)
@@ -503,7 +515,7 @@ if PROC_COL in top.columns:
 else:
     mcols[3].metric("Avg Proc Time", "N/A")
 
-show = [FRAME_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL]
+show = [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL]
 for c in [ABS_ERROR_COL, PROC_COL]:
     if c in top.columns:
         show.append(c)
