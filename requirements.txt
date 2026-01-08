@@ -1,6 +1,6 @@
 streamlit
 altair
-polars
+pandas
 numpy
 statsmodels
 vega_datasets

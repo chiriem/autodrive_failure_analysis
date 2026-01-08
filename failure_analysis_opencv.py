@@ -1,6 +1,6 @@
 import streamlit as st
 import altair as alt
-import polars as pl
+import pandas as pd
 import numpy as np
 
 st.set_page_config(page_title="실패분석", page_icon="🛣️", layout="wide")
@@ -23,7 +23,7 @@ TOD_COL = "Time of Day"                # optional
 # =============================================================================
 # Helpers
 
-def _standardize_columns(df: pl.DataFrame) -> pl.DataFrame:
+def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Rename common variants to canonical column names."""
     rename_map = {}
 
@@ -75,53 +75,55 @@ def _standardize_columns(df: pl.DataFrame) -> pl.DataFrame:
                 break
 
     if rename_map:
-        df = df.rename(rename_map)
+        df = df.rename(columns=rename_map)
     return df
 
 
-def _ensure_fields(df: pl.DataFrame) -> pl.DataFrame:
+def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
     """Fill convenience columns and sanitize ratio/quality ranges."""
     # Required columns check happens later, but we can sanitize if present:
     if QUALITY_COL in df.columns:
-        df = df.with_columns(pl.col(QUALITY_COL).cast(pl.Float64).clip(0, 100))
+        df[QUALITY_COL] = df[QUALITY_COL].astype(float).clip(0, 100)
 
     if MASK_RATIO_COL in df.columns:
-        r = pl.col(MASK_RATIO_COL).cast(pl.Float64)
+        r = df[MASK_RATIO_COL].astype(float)
         # accept 0~1 or 0~100
-        df = df.with_columns(
-            pl.when(r > 1.5).then((r / 100.0)).otherwise(r).clip(0, 1).alias(MASK_RATIO_COL)
-        )
+        df[MASK_RATIO_COL] = np.where(r > 1.5, r / 100.0, r)
+        df[MASK_RATIO_COL] = df[MASK_RATIO_COL].clip(0, 1)
 
     if ERROR_COL in df.columns and ABS_ERROR_COL not in df.columns:
-        df = df.with_columns(pl.col(ERROR_COL).cast(pl.Float64).abs().alias(ABS_ERROR_COL))
+        df[ABS_ERROR_COL] = df[ERROR_COL].astype(float).abs()
 
     # Optional defaults
     if WEATHER_COL not in df.columns:
-        df = df.with_columns(pl.lit("Unknown").alias(WEATHER_COL))
+        df[WEATHER_COL] = "Unknown"
     if TOD_COL not in df.columns:
-        df = df.with_columns(pl.lit("Unknown").alias(TOD_COL))
+        df[TOD_COL] = "Unknown"
 
     return df
 
 
-def _describe_missing(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+def _describe_missing(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     rows = []
-    n = df.height
     for c in cols:
         if c not in df.columns:
             rows.append({"column": c, "present": False, "missing_rate": 1.0, "dtype": "N/A"})
         else:
-            miss = df.select(pl.col(c).is_null().mean()).item()
+            miss = df[c].isnull().mean()
             rows.append({"column": c, "present": True, "missing_rate": float(miss), "dtype": str(df[c].dtype)})
-    return pl.DataFrame(rows).with_columns(
-        (pl.col("missing_rate") * 100).round(2).alias("missing_%")
-    ).drop("missing_rate")
+    
+    res = pd.DataFrame(rows)
+    if not res.empty:
+        res["missing_%"] = (res["missing_rate"] * 100).round(2)
+        res = res.drop(columns=["missing_rate"])
+    return res
 
 
-def perform_linear_regression(df: pl.DataFrame, x_col: str, y_col: str, sigma_threshold: float) -> pl.DataFrame:
-    clean_df = df.drop_nulls([x_col, y_col])
-    if clean_df.is_empty():
-        return clean_df.with_columns(pl.lit("In Range").alias("Status"))
+def perform_linear_regression(df: pd.DataFrame, x_col: str, y_col: str, sigma_threshold: float) -> pd.DataFrame:
+    clean_df = df.dropna(subset=[x_col, y_col]).copy()
+    if clean_df.empty:
+        clean_df["Status"] = "In Range"
+        return clean_df
 
     x = clean_df[x_col].to_numpy()
     y = clean_df[y_col].to_numpy()
@@ -134,21 +136,20 @@ def perform_linear_regression(df: pl.DataFrame, x_col: str, y_col: str, sigma_th
     upper_bound = predictions + (sigma_threshold * std_dev)
     lower_bound = predictions - (sigma_threshold * std_dev)
 
-    return clean_df.with_columns(
-        [
-            pl.Series("Predicted", predictions),
-            pl.Series("Upper Bound", upper_bound),
-            pl.Series("Lower Bound", lower_bound),
-            pl.when(
-                (pl.col(y_col) > pl.Series(upper_bound)) | (pl.col(y_col) < pl.Series(lower_bound))
-            ).then(pl.lit("Outlier")).otherwise(pl.lit("In Range")).alias("Status"),
-        ]
+    clean_df["Predicted"] = predictions
+    clean_df["Upper Bound"] = upper_bound
+    clean_df["Lower Bound"] = lower_bound
+    clean_df["Status"] = np.where(
+        (clean_df[y_col] > upper_bound) | (clean_df[y_col] < lower_bound),
+        "Outlier",
+        "In Range"
     )
+    return clean_df
 
 
-def draw_histogram(df: pl.DataFrame, metric_name: str, bins: int = 20, height: int = 220):
-    clean_df = df.drop_nulls(subset=[metric_name])
-    if clean_df.is_empty():
+def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: int = 220):
+    clean_df = df.dropna(subset=[metric_name])
+    if clean_df.empty:
         st.info(f"No data for {metric_name}")
         return
     st.altair_chart(
@@ -184,7 +185,7 @@ if st.session_state.uploader_count < 5:
 
 use_demo = st.toggle("데모 데이터 사용", value=(not uploaded_files))
 
-def _generate_demo(n: int = 1200) -> pl.DataFrame:
+def _generate_demo(n: int = 1200) -> pd.DataFrame:
     np.random.seed(7)
 
     weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
@@ -208,7 +209,7 @@ def _generate_demo(n: int = 1200) -> pl.DataFrame:
 
 
     proc = np.random.normal(28, 5, n)
-    df = pl.DataFrame({
+    df = pd.DataFrame({
         TS_COL: np.arange(n) * 100,  # ms
         WEATHER_COL: weather,
         TOD_COL: tod,
@@ -216,16 +217,17 @@ def _generate_demo(n: int = 1200) -> pl.DataFrame:
         QUALITY_COL: quality,
         ERROR_COL: err,
         PROC_COL: proc,
-    }).with_columns(pl.col(ERROR_COL).abs().alias(ABS_ERROR_COL))
+    })
+    df[ABS_ERROR_COL] = df[ERROR_COL].abs()
     return df
 
 
-df = pl.DataFrame()
+df = pd.DataFrame()
 if uploaded_files:
     dfs = []
     for f in uploaded_files:
         try:
-            d = pl.read_csv(f, infer_schema_length=1000)
+            d = pd.read_csv(f)
             d = _standardize_columns(d)
             d = _ensure_fields(d)
             dfs.append(d)
@@ -234,7 +236,7 @@ if uploaded_files:
     
     if dfs:
         try:
-            df = pl.concat(dfs, how="diagonal")
+            df = pd.concat(dfs, ignore_index=True)
         except Exception as e:
             st.error(f"파일 병합 실패: {e}")
             st.stop()
@@ -243,7 +245,7 @@ elif use_demo:
     df = _standardize_columns(df)
     df = _ensure_fields(df)
 
-if df.is_empty():
+if df.empty:
     st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
     st.stop()
 
@@ -319,10 +321,10 @@ else:
     with a:
         st.caption("High-quality but high-error (제어/보정 의심)")
         st.dataframe(
-            model_df.sort(ABS_ERROR_COL, descending=True).select(
+            model_df.sort_values(ABS_ERROR_COL, ascending=False)[
                 [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL] +
                 ([PROC_COL] if PROC_COL in model_df.columns else [])
-            ).head(20),
+            ].head(20),
             column_config=COLUMN_CONFIG,
             height=360,
         )
@@ -330,11 +332,11 @@ else:
     with b:
         st.caption("Low-quality frames (인식 품질 붕괴 의심)")
         st.dataframe(
-            df.sort(QUALITY_COL).select(
+            df.sort_values(QUALITY_COL)[
                 [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL] +
                 ([ABS_ERROR_COL] if ABS_ERROR_COL in df.columns else []) +
                 ([PROC_COL] if PROC_COL in df.columns else [])
-            ).head(20),
+            ].head(20),
             column_config=COLUMN_CONFIG,
             height=360,
         )
@@ -353,7 +355,7 @@ st.markdown("""
 c1, c2 = st.columns([0.7, 0.3])
 with c1:
     st.altair_chart(
-        alt.Chart(df.drop_nulls([MASK_RATIO_COL, QUALITY_COL]))
+        alt.Chart(df.dropna(subset=[MASK_RATIO_COL, QUALITY_COL]))
         .mark_point(filled=True, opacity=0.45)
         .encode(
             x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
@@ -375,24 +377,25 @@ st.caption("Tip: ratio가 높은데 quality가 낮으면(산점도 오른쪽-아
 st.divider()
 st.markdown("## Part III: 환경(날씨/시간대)별 비교 (선택)")
 
-def _group_summary(data: pl.DataFrame, group_col: str, metric_col: str, include_unknown: bool) -> pl.DataFrame:
-    d = data.drop_nulls(subset=[group_col, metric_col])
+def _group_summary(data: pd.DataFrame, group_col: str, metric_col: str, include_unknown: bool) -> pd.DataFrame:
+    d = data.dropna(subset=[group_col, metric_col])
     if not include_unknown:
-        d = d.filter(pl.col(group_col) != "Unknown")
+        d = d[d[group_col] != "Unknown"]
     return (
-        d.group_by(group_col)
+        d.groupby(group_col)[metric_col]
         .agg(
-            pl.len().alias("num_frames"),
-            pl.col(metric_col).median().alias("median"),
-            pl.col(metric_col).mean().alias("mean"),
-            pl.col(metric_col).quantile(0.25).alias("p25"),
-            pl.col(metric_col).quantile(0.75).alias("p75"),
+            num_frames='count',
+            median='median',
+            mean='mean',
+            p25=lambda x: x.quantile(0.25),
+            p75=lambda x: x.quantile(0.75)
         )
-        .sort("median", descending=True)
+        .reset_index()
+        .sort_values("median", ascending=False)
     )
 
-def _bar_chart(summary: pl.DataFrame, group_col: str, metric_label: str, domain=None, height: int = 320):
-    if summary.is_empty():
+def _bar_chart(summary: pd.DataFrame, group_col: str, metric_label: str, domain=None, height: int = 320):
+    if summary.empty:
         st.info("그룹 비교에 사용할 데이터가 없습니다.")
         return
     st.altair_chart(
@@ -418,7 +421,7 @@ def _bar_chart(summary: pl.DataFrame, group_col: str, metric_label: str, domain=
 group_candidates = []
 for g in [WEATHER_COL, TOD_COL]:
     if g in df.columns:
-        uniq_non_unknown = df.filter(pl.col(g) != "Unknown").select(pl.col(g)).unique().height
+        uniq_non_unknown = df[df[g] != "Unknown"][g].nunique()
         if uniq_non_unknown >= 2:
             group_candidates.append(g)
 
@@ -442,7 +445,7 @@ else:
     summary = _group_summary(df, group_col, metric_col, include_unknown)
 
     # If user includes Unknown and it dominates, still keep it—but warn if it's the only group.
-    if summary.height <= 1:
+    if len(summary) <= 1:
         st.info("선택한 그룹 기준에서 비교 가능한 범주가 1개뿐입니다(대부분 Unknown일 수 있음).")
     _bar_chart(summary, group_col, metric_label, domain=domain)
 
@@ -458,7 +461,7 @@ st.markdown("## Part IV: Outlier Explorer (회귀 기반)")
 
 numeric_cols = []
 for c in [QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL]:
-    if c in df.columns and df[c].dtype in (pl.Int64, pl.Int32, pl.Float32, pl.Float64):
+    if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
         numeric_cols.append(c)
 
 if len(numeric_cols) < 2:
@@ -473,7 +476,7 @@ else:
     sigma_val = st.slider("Confidence interval (sigma)", min_value=0.5, max_value=4.0, value=2.0, step=0.1)
 
     model_df = perform_linear_regression(df, x_col, y_col, sigma_val)
-    outliers = model_df.filter(pl.col("Status") == "Outlier")
+    outliers = model_df[model_df["Status"] == "Outlier"]
 
     st.altair_chart(
         alt.Chart(model_df)
@@ -493,7 +496,7 @@ else:
     for extra in [QUALITY_COL, MASK_RATIO_COL, PROC_COL]:
         if extra in df.columns and extra not in show_cols:
             show_cols.append(extra)
-    st.dataframe(outliers.select([c for c in show_cols if c in outliers.columns]), column_config=COLUMN_CONFIG, height=360)
+    st.dataframe(outliers[[c for c in show_cols if c in outliers.columns]], column_config=COLUMN_CONFIG, height=360)
 
 # =============================================================================
 # Part V: Top low-quality frames
@@ -501,7 +504,7 @@ else:
 st.divider()
 st.markdown("## Part V: 최저 품질 프레임 Top 20 요약")
 
-top = df.sort(QUALITY_COL).head(20)
+top = df.sort_values(QUALITY_COL).head(20)
 
 mcols = st.columns(4)
 mcols[0].metric("Avg Quality (Top 20)", f"{float(top[QUALITY_COL].mean()):.1f}")
@@ -520,7 +523,7 @@ for c in [ABS_ERROR_COL, PROC_COL]:
     if c in top.columns:
         show.append(c)
 
-st.dataframe(top.select([c for c in show if c in top.columns]), column_config=COLUMN_CONFIG, height=360)
+st.dataframe(top[[c for c in show if c in top.columns]], column_config=COLUMN_CONFIG, height=360)
 
 # =============================================================================
 # Part VI: Browse
