@@ -167,7 +167,7 @@ def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: i
 # UI
 
 st.title("자율주행 실패 분석 (OpenCV 로그: Lane Quality + Mask Ratio 중심)")
-st.caption("YOLO Confidence/IoU 없이, 직접 계산한 Lane Quality Score / Mask White Ratio를 기준으로 분석합니다.")
+st.caption("Lane Quality Score / Mask White Ratio를 기준으로 분석합니다.")
 
 if "uploader_count" not in st.session_state:
     st.session_state.uploader_count = 1
@@ -453,50 +453,199 @@ else:
     st.dataframe(summary, hide_index=True, use_container_width=True)
 
 # =============================================================================
-# Part IV: Outlier Explorer
-
+# Part IV: Outlier Candidates (rule-first, safer interpretation)
 
 st.divider()
-st.markdown("## Part IV: Outlier Explorer (회귀 기반)")
+st.markdown("## Part IV: 이상치 후보 탐색")
+st.caption("이 파트는 이상치 후보를 탐색하기 위한 용도입니다. 특정 프레임이 이상치로 표시되더라도 실패 원인으로 단정할 수 없습니다.")
 
-numeric_cols = []
-for c in [QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL]:
-    if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-        numeric_cols.append(c)
-
-if len(numeric_cols) < 2:
-    st.info("숫자형 컬럼이 부족해서 Part IV는 생략됩니다.")
+required_for_part4 = [QUALITY_COL, MASK_RATIO_COL]
+missing_part4 = [c for c in required_for_part4 if c not in df.columns]
+if missing_part4:
+    st.info("필수 컬럼이 부족해서 Part IV는 생략됩니다: " + ", ".join(missing_part4))
 else:
-    col1, col2 = st.columns(2)
-    with col1:
-        x_col = st.selectbox("X Axis (predictor)", options=numeric_cols, index=0)
-    with col2:
-        y_col = st.selectbox("Y Axis (target)", options=numeric_cols, index=1 if len(numeric_cols) > 1 else 0)
+    cfg1, cfg2, cfg3, cfg4 = st.columns([1, 1, 1, 1])
+    with cfg1:
+        quality_low_th = st.slider("품질 점수 임계값(이하)", min_value=0, max_value=100, value=30, step=1)
+    with cfg2:
+        ratio_low_th = st.number_input("마스크 비율 하한", min_value=0.0, max_value=1.0, value=0.01, step=0.001, format="%.3f")
+    with cfg3:
+        ratio_high_th = st.number_input("마스크 비율 상한", min_value=0.0, max_value=1.0, value=0.25, step=0.01, format="%.2f")
+    with cfg4:
+        sample_n_part4 = st.number_input("차트 샘플 수", min_value=500, max_value=200000, value=5000, step=500)
 
-    sigma_val = st.slider("Confidence interval (sigma)", min_value=0.5, max_value=4.0, value=2.0, step=0.1)
+    df4 = df.copy()
 
-    model_df = perform_linear_regression(df, x_col, y_col, sigma_val)
-    outliers = model_df[model_df["Status"] == "Outlier"]
+    df4[QUALITY_COL] = pd.to_numeric(df4[QUALITY_COL], errors="coerce")
+    df4[MASK_RATIO_COL] = pd.to_numeric(df4[MASK_RATIO_COL], errors="coerce")
+
+    if ABS_ERROR_COL in df4.columns:
+        df4[ABS_ERROR_COL] = pd.to_numeric(df4[ABS_ERROR_COL], errors="coerce")
+    if ERROR_COL in df4.columns:
+        df4[ERROR_COL] = pd.to_numeric(df4[ERROR_COL], errors="coerce")
+
+    low_quality = df4[QUALITY_COL] <= float(quality_low_th)
+    low_ratio = df4[MASK_RATIO_COL] <= float(ratio_low_th)
+    high_ratio = df4[MASK_RATIO_COL] >= float(ratio_high_th)
+
+    abs_err_thresh = None
+    high_error = pd.Series(False, index=df4.index)
+    inconsistent = pd.Series(False, index=df4.index)
+
+    if ABS_ERROR_COL in df4.columns and pd.api.types.is_numeric_dtype(df4[ABS_ERROR_COL]):
+        pctl = st.slider("절대오차 분위수 임계값", min_value=80, max_value=99, value=95, step=1)
+        vals = df4[ABS_ERROR_COL].to_numpy()
+        vals = vals[np.isfinite(vals)]
+        if len(vals) > 0:
+            abs_err_thresh = float(np.percentile(vals, pctl))
+            st.caption(f"절대오차 임계값은 상위 {pctl}% 기준으로 {abs_err_thresh:.2f} 입니다.")
+            high_error = df4[ABS_ERROR_COL] >= abs_err_thresh
+
+            hi_q = st.slider("불일치 후보: 품질 높음 기준", min_value=0, max_value=100, value=70, step=1)
+            inconsistent = (df4[QUALITY_COL] >= float(hi_q)) & high_error
+
+    tag_cols = {
+        "마스크 비율 매우 낮음": low_ratio,
+        "품질 낮음": low_quality,
+        "오차 과다": high_error,
+        "마스크 비율 매우 높음": high_ratio,
+        "불일치(품질 높음+오차 큼)": inconsistent,
+    }
+
+    any_candidate = None
+    for mask in tag_cols.values():
+        if any_candidate is None:
+            any_candidate = mask.copy()
+        else:
+            any_candidate = any_candidate | mask
+
+    df4["Candidate Tags"] = ""
+    for tag_name, mask in tag_cols.items():
+        if mask is None:
+            continue
+        df4.loc[mask.fillna(False), "Candidate Tags"] = df4.loc[mask.fillna(False), "Candidate Tags"].where(
+            df4.loc[mask.fillna(False), "Candidate Tags"] == "",
+            df4.loc[mask.fillna(False), "Candidate Tags"] + ", "
+        ) + tag_name
+
+    priority = [
+        "마스크 비율 매우 낮음",
+        "불일치(품질 높음+오차 큼)",
+        "품질 낮음",
+        "오차 과다",
+        "마스크 비율 매우 높음",
+    ]
+
+    df4["Primary Tag"] = "정상 범위"
+    for tag_name in priority:
+        mask = tag_cols.get(tag_name)
+        if mask is None:
+            continue
+        df4.loc[mask.fillna(False), "Primary Tag"] = tag_name
+
+    candidates = df4[any_candidate.fillna(False)].copy()
+    st.subheader("후보 요약")
+    left, right = st.columns([1, 1])
+    with left:
+        counts = candidates["Primary Tag"].value_counts(dropna=False).reset_index()
+        counts.columns = ["Primary Tag", "count"]
+        st.dataframe(counts, use_container_width=True, height=240)
+    with right:
+        if WEATHER_COL in candidates.columns:
+            st.caption("Weather 분포(후보만)")
+            w_counts = candidates[WEATHER_COL].value_counts(dropna=False).reset_index()
+            w_counts.columns = [WEATHER_COL, "count"]
+            st.dataframe(w_counts, use_container_width=True, height=240)
+
+    st.subheader("후보 산점도")
+    default_x = MASK_RATIO_COL if MASK_RATIO_COL in df4.columns else QUALITY_COL
+    default_y = QUALITY_COL if QUALITY_COL in df4.columns else MASK_RATIO_COL
+
+    numeric_for_scatter = []
+    for c in [MASK_RATIO_COL, QUALITY_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL]:
+        if c in df4.columns and pd.api.types.is_numeric_dtype(df4[c]):
+            numeric_for_scatter.append(c)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        x_col4 = st.selectbox("X (탐색)", options=numeric_for_scatter, index=numeric_for_scatter.index(default_x) if default_x in numeric_for_scatter else 0)
+    with c2:
+        y_col4 = st.selectbox("Y (탐색)", options=numeric_for_scatter, index=numeric_for_scatter.index(default_y) if default_y in numeric_for_scatter else min(1, len(numeric_for_scatter)-1))
+
+    plot_df = df4.copy()
+    if len(plot_df) > int(sample_n_part4):
+        plot_df = plot_df.sample(int(sample_n_part4), random_state=42)
+
+    tooltip_cols = []
+    for c in [TS_COL, WEATHER_COL, TOD_COL, x_col4, y_col4, "Primary Tag", "Candidate Tags"]:
+        if c in plot_df.columns:
+            tooltip_cols.append(c)
 
     st.altair_chart(
-        alt.Chart(model_df)
+        alt.Chart(plot_df)
         .mark_point(filled=True, opacity=0.5)
         .encode(
-            x=alt.X(x_col, scale=alt.Scale(zero=False)),
-            y=alt.Y(y_col, scale=alt.Scale(zero=False)),
-            color=alt.Color("Status:N").legend(None),
-            shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-            tooltip=[TS_COL, WEATHER_COL, TOD_COL, x_col, y_col, "Status"],
-        ).properties(height=420),
+            x=alt.X(x_col4, scale=alt.Scale(zero=False)),
+            y=alt.Y(y_col4, scale=alt.Scale(zero=False)),
+            color=alt.Color("Primary Tag:N"),
+            tooltip=tooltip_cols,
+        )
+        .properties(height=420),
         use_container_width=True,
     )
 
-    st.subheader("Detected Outliers")
-    show_cols = [TS_COL, WEATHER_COL, TOD_COL, x_col, y_col]
-    for extra in [QUALITY_COL, MASK_RATIO_COL, PROC_COL]:
-        if extra in df.columns and extra not in show_cols:
-            show_cols.append(extra)
-    st.dataframe(outliers[[c for c in show_cols if c in outliers.columns]], column_config=COLUMN_CONFIG, height=360)
+    st.subheader("후보 목록")
+    show_cols = []
+    for c in [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL, "Primary Tag", "Candidate Tags"]:
+        if c in candidates.columns:
+            show_cols.append(c)
+    st.dataframe(candidates[show_cols], column_config=COLUMN_CONFIG, use_container_width=True, height=360)
+
+    # with st.expander("고급: 회귀 기반 이상치(참고용)"):
+    #     st.caption("선형 회귀 기반 이상치는 가정에 민감합니다. 탐색 참고용으로만 사용해 주세요.")
+    #     numeric_cols = []
+    #     for c in [QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL]:
+    #         if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+    #             numeric_cols.append(c)
+
+    #     if len(numeric_cols) < 2:
+    #         st.info("숫자형 컬럼이 부족해서 회귀 기반 탐색은 생략됩니다.")
+    #     else:
+    #         col1, col2, col3 = st.columns([1, 1, 1])
+    #         with col1:
+    #             x_col = st.selectbox("X Axis (predictor)", options=numeric_cols, index=0, key="p4_reg_x")
+    #         with col2:
+    #             y_col = st.selectbox("Y Axis (target)", options=numeric_cols, index=1 if len(numeric_cols) > 1 else 0, key="p4_reg_y")
+    #         with col3:
+    #             sigma_threshold = st.slider("잔차 임계값(표준편차 배수)", min_value=1.0, max_value=6.0, value=3.0, step=0.5, key="p4_reg_sigma")
+
+    #         model_df = perform_linear_regression(df, x_col=x_col, y_col=y_col, sigma_threshold=float(sigma_threshold))
+    #         outliers = model_df[model_df["Status"] == "Outlier"].copy()
+
+    #         tooltip_reg = []
+    #         for c in [TS_COL, WEATHER_COL, TOD_COL, x_col, y_col, "Status"]:
+    #             if c in model_df.columns:
+    #                 tooltip_reg.append(c)
+
+    #         st.altair_chart(
+    #             alt.Chart(model_df)
+    #             .mark_point(filled=True, opacity=0.5)
+    #             .encode(
+    #                 x=alt.X(x_col, scale=alt.Scale(zero=False)),
+    #                 y=alt.Y(y_col, scale=alt.Scale(zero=False)),
+    #                 color=alt.Color("Status:N").legend(None),
+    #                 shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
+    #                 tooltip=tooltip_reg,
+    #             ).properties(height=420),
+    #             use_container_width=True,
+    #         )
+
+    #         st.subheader("Detected Outliers (회귀 기반)")
+    #         show_cols_reg = []
+    #         for c in [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL, ABS_ERROR_COL, ERROR_COL, PROC_COL]:
+    #             if c in outliers.columns:
+    #                 show_cols_reg.append(c)
+    #         st.dataframe(outliers[show_cols_reg], column_config=COLUMN_CONFIG, use_container_width=True, height=360)
 
 # =============================================================================
 # Part V: Top low-quality frames
