@@ -2,6 +2,8 @@ import streamlit as st
 import altair as alt
 import pandas as pd
 import numpy as np
+from pathlib import Path
+import re
 
 st.set_page_config(page_title="실패분석", page_icon="🛣️", layout="wide")
 
@@ -19,6 +21,11 @@ ABS_ERROR_COL = "Abs Lane Error"
 PROC_COL = "Processing Time (ms)"      # optional
 WEATHER_COL = "Weather"                # optional
 TOD_COL = "Time of Day"                # optional
+
+# Synthetic IDs (created at load/merge time)
+RUN_ID_COL = "Run ID"
+ROW_IN_RUN_COL = "Row In Run"
+EVENT_ID_COL = "Event ID"
 
 # =============================================================================
 # Helpers
@@ -83,16 +90,17 @@ def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
     """Fill convenience columns and sanitize ratio/quality ranges."""
     # Required columns check happens later, but we can sanitize if present:
     if QUALITY_COL in df.columns:
-        df[QUALITY_COL] = df[QUALITY_COL].astype(float).clip(0, 100)
+        q = pd.to_numeric(df[QUALITY_COL], errors="coerce")
+        df[QUALITY_COL] = q.clip(0, 100)
 
     if MASK_RATIO_COL in df.columns:
-        r = df[MASK_RATIO_COL].astype(float)
-        # accept 0~1 or 0~100
+        r = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce")
         df[MASK_RATIO_COL] = np.where(r > 1.5, r / 100.0, r)
-        df[MASK_RATIO_COL] = df[MASK_RATIO_COL].clip(0, 1)
+        df[MASK_RATIO_COL] = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce").clip(0, 1)
 
     if ERROR_COL in df.columns and ABS_ERROR_COL not in df.columns:
-        df[ABS_ERROR_COL] = df[ERROR_COL].astype(float).abs()
+        e = pd.to_numeric(df[ERROR_COL], errors="coerce")
+        df[ABS_ERROR_COL] = e.abs()
 
     # Optional defaults
     if WEATHER_COL not in df.columns:
@@ -101,6 +109,49 @@ def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
         df[TOD_COL] = "Unknown"
 
     return df
+
+
+def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """If df has duplicate column names, coalesce them into a single column (left-to-right fillna)."""
+    if df.columns.is_unique:
+        return df
+
+    out = df.copy()
+    seen = set()
+
+    for col in list(out.columns):
+        if col in seen:
+            continue
+
+        matches = [i for i, c in enumerate(out.columns) if c == col]
+        if len(matches) <= 1:
+            seen.add(col)
+            continue
+
+        block = out.loc[:, col]  # DataFrame when duplicates exist
+        base = block.iloc[:, 0]
+        for j in range(1, block.shape[1]):
+            base = base.fillna(block.iloc[:, j])
+        out[col] = base
+
+        drop_positions = matches[1:]
+        out = out.drop(out.columns[drop_positions], axis=1)
+        seen.add(col)
+
+    return out
+
+
+def _make_tooltip(df: pd.DataFrame, wanted: list[str]) -> list[str]:
+    """Return tooltip columns that actually exist in df (keeps order)."""
+    return [c for c in wanted if c in df.columns]
+
+
+def _add_event_ids_per_run(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
+    d = df.copy()
+    d[RUN_ID_COL] = run_id
+    d[ROW_IN_RUN_COL] = np.arange(len(d), dtype=int)
+    d[EVENT_ID_COL] = d[RUN_ID_COL].astype(str) + "_" + d[ROW_IN_RUN_COL].astype(str).str.zfill(6)
+    return d
 
 
 def _describe_missing(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -228,8 +279,13 @@ if uploaded_files:
     for f in uploaded_files:
         try:
             d = pd.read_csv(f)
+            d = _coalesce_duplicate_columns(d)
             d = _standardize_columns(d)
+            d = _coalesce_duplicate_columns(d)
             d = _ensure_fields(d)
+            safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
+            run_id = f"run_{len(dfs)+1:03d}_{safe_name}"
+            d = _add_event_ids_per_run(d, run_id=run_id)
             dfs.append(d)
         except Exception as e:
             st.error(f"CSV 로드 실패 ({f.name}): {e}")
@@ -237,6 +293,7 @@ if uploaded_files:
     if dfs:
         try:
             df = pd.concat(dfs, ignore_index=True)
+            df = _coalesce_duplicate_columns(df)
         except Exception as e:
             st.error(f"파일 병합 실패: {e}")
             st.stop()
@@ -244,6 +301,7 @@ elif use_demo:
     df = _generate_demo()
     df = _standardize_columns(df)
     df = _ensure_fields(df)
+    df = _add_event_ids_per_run(df, run_id="demo")
 
 if df.empty:
     st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
@@ -260,9 +318,13 @@ if missing:
     )
     st.stop()
 
+# Timestamp is recommended for time-based interpretation
+if TS_COL not in df.columns:
+    st.warning("Timestamp 컬럼이 없습니다. 이벤트 식별은 Event ID로 가능하지만, 시간 기반 해석(구간/추세)은 제한될 수 있습니다.")
+
 # Column config
 COLUMN_CONFIG = {
-    TS_COL: st.column_config.TextColumn(),
+    TS_COL: st.column_config.NumberColumn(format='%.0f'),
     QUALITY_COL: st.column_config.ProgressColumn(min_value=0, max_value=100, format="compact", width=130),
     MASK_RATIO_COL: st.column_config.NumberColumn(format="%.4f"),
     ERROR_COL: st.column_config.NumberColumn(format="%.2f"),
@@ -270,6 +332,9 @@ COLUMN_CONFIG = {
     PROC_COL: st.column_config.NumberColumn(format="%.1f ms"),
     WEATHER_COL: st.column_config.TextColumn(),
     TOD_COL: st.column_config.TextColumn(),
+    RUN_ID_COL: st.column_config.TextColumn(),
+    ROW_IN_RUN_COL: st.column_config.NumberColumn(format="%.0f"),
+    EVENT_ID_COL: st.column_config.TextColumn(),
 }
 
 # =============================================================================
@@ -306,7 +371,7 @@ else:
                 y=alt.Y(ABS_ERROR_COL, type="quantitative", scale=alt.Scale(zero=True)),
                 color=alt.Color("Status:N").legend(None),
                 shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-                tooltip=[TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL, "Status"],
+                tooltip=_make_tooltip(model_df, [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL, "Status"]),
             )
             .properties(height=420),
             use_container_width=True,
@@ -322,7 +387,7 @@ else:
         st.caption("High-quality but high-error (제어/보정 의심)")
         st.dataframe(
             model_df.sort_values(ABS_ERROR_COL, ascending=False)[
-                [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL] +
+                [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, ABS_ERROR_COL] +
                 ([PROC_COL] if PROC_COL in model_df.columns else [])
             ].head(20),
             column_config=COLUMN_CONFIG,
@@ -333,7 +398,7 @@ else:
         st.caption("Low-quality frames (인식 품질 붕괴 의심)")
         st.dataframe(
             df.sort_values(QUALITY_COL)[
-                [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL] +
+                [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL] +
                 ([ABS_ERROR_COL] if ABS_ERROR_COL in df.columns else []) +
                 ([PROC_COL] if PROC_COL in df.columns else [])
             ].head(20),
@@ -360,7 +425,7 @@ with c1:
         .encode(
             x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
             y=alt.Y(QUALITY_COL, type="quantitative", scale=alt.Scale(domain=[0, 100])),
-            tooltip=[TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, QUALITY_COL],
+            tooltip=_make_tooltip(df, [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, QUALITY_COL]),
         )
         .properties(height=420),
         use_container_width=True,
@@ -577,7 +642,7 @@ else:
         plot_df = plot_df.sample(int(sample_n_part4), random_state=42)
 
     tooltip_cols = []
-    for c in [TS_COL, WEATHER_COL, TOD_COL, x_col4, y_col4, "Primary Tag", "Candidate Tags"]:
+    for c in [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, x_col4, y_col4, "Primary Tag", "Candidate Tags"]:
         if c in plot_df.columns:
             tooltip_cols.append(c)
 
@@ -667,7 +732,7 @@ if PROC_COL in top.columns:
 else:
     mcols[3].metric("Avg Proc Time", "N/A")
 
-show = [TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL]
+show = [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, QUALITY_COL, MASK_RATIO_COL]
 for c in [ABS_ERROR_COL, PROC_COL]:
     if c in top.columns:
         show.append(c)
