@@ -637,15 +637,13 @@ def render() -> None:
     조절값은 **민감도 1개(%)**만 사용하며, 나머지 임계값은 데이터 분위수로 자동 결정됩니다.
     """))
 
-    st.markdown("#### 민감도 설정")
-    # ---- single control (in-body)
-    pctl = st.slider(
+    # ---- single control (sidebar)
+    pctl = st.sidebar.slider(
         "이상치 후보 민감도(%)",
         min_value=80,
         max_value=99,
         value=95,
         step=1,
-        key="outlier_sensitivity_pctl_0109",
         help="높을수록 더 극단(상위/하위 꼬리)만 후보로 잡습니다. (오차/처리시간: 상위 pctl, 마스크비율: 하위(100-pctl) 및 상위 pctl)"
     )
 
