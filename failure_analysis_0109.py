@@ -851,6 +851,151 @@ def render() -> None:
     st.markdown("## Part V: 전체 로그 보기")
     st.dataframe(df, height=560, column_config=_column_config_for(df))
 
+    _render_part_x(df=df, pctl=pctl, cand=cand)
 
-if __name__ == "__main__":
-    render()
+# =============================================================================
+# Part X: Improvements (analysis-driven)
+
+def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = None) -> None:
+    st.divider()
+    st.markdown("## Part X: 자율주행 개선사항 (분석 기반)")
+    
+    # --- compute key stats from the same dataset shown above
+    n_total = int(len(df))
+    
+    ratio = pd.to_numeric(df.get(MASK_RATIO_COL), errors="coerce").clip(0, 1)
+    ratio_valid = ratio.dropna()
+    
+    # use the same sensitivity (pctl) as Part III so that the narrative matches the candidate extraction thresholds
+    low_th = high_th = None
+    low_rate = high_rate = None
+    if not ratio_valid.empty:
+        low_th = float(ratio_valid.quantile((100 - pctl) / 100.0))
+        high_th = float(ratio_valid.quantile(pctl / 100.0))
+        valid_mask = ratio.notna()
+        low_rate = float((ratio[valid_mask] <= low_th).mean() * 100.0)
+        high_rate = float((ratio[valid_mask] >= high_th).mean() * 100.0)
+    
+    err_missing_rate = None
+    if ERROR_COL in df.columns:
+        err_missing_rate = float(pd.to_numeric(df[ERROR_COL], errors="coerce").isna().mean() * 100.0)
+    
+    abs_p95 = abs_p99 = None
+    abs_tail_rate = None
+    abs_tail_th = None
+    if ABS_ERROR_COL in df.columns:
+        ae = pd.to_numeric(df[ABS_ERROR_COL], errors="coerce")
+        if ae.notna().any():
+            abs_p95 = float(ae.quantile(0.95))
+            abs_p99 = float(ae.quantile(0.99))
+            abs_tail_th = float(ae.quantile(pctl / 100.0))
+            abs_tail_rate = float((ae >= abs_tail_th).mean() * 100.0)
+    
+    proc_p95 = proc_p99 = proc_max = None
+    proc_tail_rate = None
+    proc_tail_th = None
+    if PROC_COL in df.columns:
+        pr = pd.to_numeric(df[PROC_COL], errors="coerce")
+        if pr.notna().any():
+            proc_p95 = float(pr.quantile(0.95))
+            proc_p99 = float(pr.quantile(0.99))
+            proc_max = float(pr.max())
+            proc_tail_th = float(pr.quantile(pctl / 100.0))
+            proc_tail_rate = float((pr >= proc_tail_th).mean() * 100.0)
+    
+    st.markdown("### 핵심 지표 요약")
+    summary_rows = [
+        {"항목": "총 프레임 수", "값": f"{n_total:,}", "의미": "분석 대상 전체 행 수"},
+    ]
+    if low_th is not None:
+        summary_rows.append({"항목": f"Mask Ratio 하한(하위 {100 - pctl}% 분위)", "값": f"{low_th:.4f}", "의미": "차선 픽셀량이 매우 낮은 꼬리 구간 기준"})
+        summary_rows.append({"항목": "Mask Ratio 하한 이하 비율", "값": f"{low_rate:.2f}%", "의미": "저가시성/미검출 후보 비중(비율 자체가 원인이라고 단정 불가)"})
+        summary_rows.append({"항목": f"Mask Ratio 상한(상위 {100 - pctl}% 분위)", "값": f"{high_th:.4f}", "의미": "차선 픽셀량이 매우 높은 꼬리 구간 기준"})
+        summary_rows.append({"항목": "Mask Ratio 상한 이상 비율", "값": f"{high_rate:.2f}%", "의미": "과검출 후보 비중(반사/노이즈 가능성은 '추측'이며 영상 확인 필요)"})
+    if err_missing_rate is not None:
+        summary_rows.append({"항목": "Lane Error 결측률", "값": f"{err_missing_rate:.2f}%", "의미": "오차 기반 분석/모니터링이 불가한 구간 비중"})
+    if abs_p95 is not None:
+        summary_rows.append({"항목": "Abs Error p95 / p99", "값": f"{abs_p95:.2f} / {abs_p99:.2f}", "의미": "오차 분포의 상위 꼬리 크기(픽셀 단위)"})
+        summary_rows.append({"항목": f"Abs Error 상위 {100 - pctl}% 기준", "값": f"{abs_tail_th:.2f} (≈ {abs_tail_rate:.2f}%)", "의미": "Part III 후보(오차 과다) 기준과 동일"})
+    if proc_p95 is not None:
+        summary_rows.append({"항목": "Proc Time p95 / p99 / max", "값": f"{proc_p95:.1f} / {proc_p99:.1f} / {proc_max:.1f} ms", "의미": "지연의 꼬리(outlier) 크기"})
+        summary_rows.append({"항목": f"Proc Time 상위 {100 - pctl}% 기준", "값": f"{proc_tail_th:.1f} ms (≈ {proc_tail_rate:.2f}%)", "의미": "Part III 후보(처리시간 과다) 기준과 동일"})
+    
+    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+    
+    # --- summarize candidate tags (if any)
+    st.markdown("### 후보(Part III) 분포 요약")
+    tag_lines = []
+    if isinstance(cand, pd.DataFrame) and (not cand.empty) and ("Primary Tag" in cand.columns):
+        vc = cand["Primary Tag"].value_counts(dropna=False)
+        top_items = vc.head(6)
+        total_cand = int(len(cand))
+        for k, v in top_items.items():
+            tag_lines.append(f"- {k}: {int(v)}건 (전체 대비 {(v / n_total * 100.0):.2f}%, 후보 내 {(v / total_cand * 100.0):.2f}%)")
+        st.markdown("\n".join(tag_lines))
+    else:
+        st.info("현재 민감도 설정에서 후보가 없거나, 후보 태그를 만들 수 없는 구성입니다.")
+    
+    # --- recommendations (kept actionable, but avoid asserting root causes without evidence)
+    st.markdown("### 개선사항(권장 우선순위)")
+    recos = []
+    
+    if low_rate is not None and low_rate >= 5.0:
+        recos.append(
+            f"1) **저가시성/미검출 구간 대응**: Mask Ratio 하한 이하가 {low_rate:.2f}%로 관측됨(≤ {low_th:.4f}). "
+            "→ 조도 변화/그림자/야간 등에서 마스크가 빈약해질 때를 가정하고, (a) 색공간 임계값/화이트밸런스, (b) ROI/전처리(블러·정규화), (c) 미검출 시 제어 fail-safe(감속/중립) 정책을 문서화·검증."
+        )
+    
+    if high_rate is not None and high_rate >= 5.0:
+        recos.append(
+            f"2) **과검출 억제**: Mask Ratio 상한 이상이 {high_rate:.2f}%로 관측됨(≥ {high_th:.4f}). "
+            "→ 반사/밝은 노이즈/배경이 마스크로 들어오는 경우를 대비해, (a) 형태 기반 필터(connected components), (b) morphological open/close, (c) 좌/우 영역 균형 체크 같은 후처리 규칙을 검토."
+        )
+    
+    if abs_p95 is not None and abs_p95 > 0:
+        recos.append(
+            f"3) **조향 안정성(오차 꼬리) 관리**: Abs Error p95={abs_p95:.2f}px, p99={abs_p99:.2f}px. "
+            "→ 상위 꼬리에서 조향이 튈 가능성이 있으므로, (a) error 저역통과/temporal smoothing, (b) 한쪽 차선만 보일 때 중심 추정(예: track_width 가정)의 영향 점검, (c) 조향 saturate(상한) 정책을 테스트 케이스로 포함."
+        )
+    
+    if err_missing_rate is not None and err_missing_rate >= 10.0:
+        recos.append(
+            f"4) **로그/모니터링 품질 개선**: Lane Error 결측률이 {err_missing_rate:.2f}%로 높음. "
+            "→ '오차를 계산 못한 상태'를 별도 상태 플래그(예: left/right detected, lane_lost)로 함께 남기고, 결측이 발생하는 조건(Mode/Mask Ratio 구간)을 자동 리포팅하도록 유지."
+        )
+    
+    if proc_p95 is not None:
+        recos.append(
+            f"5) **실시간성(지연 꼬리) 관리**: 처리시간 p95={proc_p95:.1f}ms, p99={proc_p99:.1f}ms, max={proc_max:.1f}ms. "
+            "→ 상위 꼬리에서 제어 지연이 누적될 수 있으니, (a) 프로파일링(구간별 소요시간), (b) 해상도/ROI 축소, (c) 불필요 연산 제거/벡터화 등을 점검."
+        )
+    
+    if not recos:
+        recos = [
+            "현재 설정(민감도) 기준으로는 큰 꼬리(outlier) 신호가 두드러지지 않습니다. "
+            "→ 민감도를 낮춰(예: 90~93) 후보를 넓게 잡아 재확인하거나, 영상/주행 조건 라벨을 추가해 환경별로 다시 분해해보는 것을 권장합니다."
+        ]
+    
+    for line in recos:
+        st.markdown(f"- {line}")
+    
+    st.markdown("### 문서용 요약(복사/수정 가능)")
+    report_text = "\n".join([
+        "Part X: 자율주행 개선사항(분석 기반)",
+        f"- 분석 프레임 수: {n_total:,}",
+        f"- Mask Ratio 하위 꼬리(≤ {low_th:.4f}) 비중: {low_rate:.2f}%" if low_th is not None else "- Mask Ratio: N/A",
+        f"- Mask Ratio 상위 꼬리(≥ {high_th:.4f}) 비중: {high_rate:.2f}%" if high_th is not None else "",
+        f"- Lane Error 결측률: {err_missing_rate:.2f}%" if err_missing_rate is not None else "- Lane Error: N/A",
+        f"- Abs Error p95/p99: {abs_p95:.2f}/{abs_p99:.2f}px" if abs_p95 is not None else "",
+        f"- Proc Time p95/p99/max: {proc_p95:.1f}/{proc_p99:.1f}/{proc_max:.1f}ms" if proc_p95 is not None else "",
+        "",
+        "개선 우선순위(권장):",
+        *[f"- {r}" for r in recos],
+    ]).strip()
+    
+    st.text_area("보고서 초안", value=report_text, height=260)
+    
+    
+    if __name__ == "__main__":
+        render()
+
