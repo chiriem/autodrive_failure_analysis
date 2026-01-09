@@ -226,79 +226,42 @@ def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: i
 # =============================================================================
 # UI
 
-st.title("자율주행 실패 분석 (OpenCV 로그: Mask Ratio + Error 중심)")
-st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다. (Lane Quality Score는 선택 컬럼이며 본 버전의 핵심 지표로 사용하지 않습니다.)")
-
-if "uploader_count" not in st.session_state:
-    st.session_state.uploader_count = 1
-
-uploaded_files = []
-for i in range(st.session_state.uploader_count):
-    f = st.file_uploader(f"주행 로그 CSV 업로드 {i+1}", type=["csv"], key=f"uploader_{i}")
-    if f is not None:
-        uploaded_files.append(f)
-
-if st.session_state.uploader_count < 5:
-    if st.button("➕ CSV 추가 업로드 공간 만들기"):
-        st.session_state.uploader_count += 1
-        st.rerun()
-
-use_demo = st.toggle("데모 데이터 사용", value=(not uploaded_files))
-
-def _generate_demo(n: int = 1200) -> pd.DataFrame:
-    np.random.seed(7)
-
-    weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
-    tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
-
-    # Mask ratio 0~1 (very low when lane is barely visible; can be noisy high in glare)
-    base_ratio = np.random.beta(3, 25, n)  # mostly small ratios
-    base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
-    base_ratio[tod == "Night"] *= 0.8
-    mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
-
-    # Quality 0~100: not identical to ratio (so you can see divergence cases)
-    quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
-    # inject false positives (ratio high but quality low)
-    fp = np.random.rand(n) < 0.03
-    quality[fp] = np.clip(quality[fp] - 50, 0, 100)
-
-    # Error grows when quality low
-    abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
-    err = abs_err * np.random.choice([-1, 1], n)
-
-
-    proc = np.random.normal(28, 5, n)
-    df = pd.DataFrame({
-        TS_COL: np.arange(n) * 100,  # ms
-        WEATHER_COL: weather,
-        TOD_COL: tod,
-        MASK_RATIO_COL: mask_ratio,
-        QUALITY_COL: quality,
-        ERROR_COL: err,
-        PROC_COL: proc,
-    })
-    df[ABS_ERROR_COL] = df[ERROR_COL].abs()
-    return df
-
+analysis_mode = st.sidebar.radio(
+    "분석 모드",
+    ["파일 업로드 (기본)", "0109 고정 데이터 분석"],
+    index=0
+)
 
 df = pd.DataFrame()
-if uploaded_files:
+
+if analysis_mode == "0109 고정 데이터 분석":
+    st.title("0109 자율주행 실패 분석")
+    st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다. (Lane Quality Score는 선택 컬럼이며 본 버전의 핵심 지표로 사용하지 않습니다.)")
+
+    target_files = [
+        Path("data/0108_17_log.csv"),
+        Path("data/0109_11_log.csv")
+    ]
+
     dfs = []
-    for f in uploaded_files:
+    for fpath in target_files:
+        if not fpath.exists():
+            st.warning(f"파일을 찾을 수 없습니다: {fpath}")
+            continue
+
         try:
-            d = pd.read_csv(f)
+            d = pd.read_csv(fpath)
             d = _coalesce_duplicate_columns(d)
             d = _standardize_columns(d)
             d = _coalesce_duplicate_columns(d)
             d = _ensure_fields(d)
-            safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
+            safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", fpath.stem)[:40]
             run_id = f"run_{len(dfs)+1:03d}_{safe_name}"
             d = _add_event_ids_per_run(d, run_id=run_id)
             dfs.append(d)
         except Exception as e:
-            st.error(f"CSV 로드 실패 ({f.name}): {e}")
-    
+            st.error(f"CSV 로드 실패 ({fpath.name}): {e}")
+
     if dfs:
         try:
             df = pd.concat(dfs, ignore_index=True)
@@ -306,15 +269,99 @@ if uploaded_files:
         except Exception as e:
             st.error(f"파일 병합 실패: {e}")
             st.stop()
-elif use_demo:
-    df = _generate_demo()
-    df = _standardize_columns(df)
-    df = _ensure_fields(df)
-    df = _add_event_ids_per_run(df, run_id="demo")
 
-if df.empty:
-    st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
-    st.stop()
+    if df.empty:
+        st.error("데이터를 로드할 수 없습니다. data 폴더에 0108_17_log.csv, 0109_11_log.csv 파일이 있는지 확인하세요.")
+        st.stop()
+
+else:
+    st.title("자율주행 실패 분석 (OpenCV 로그: Mask Ratio + Error 중심)")
+    st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다. (Lane Quality Score는 선택 컬럼이며 본 버전의 핵심 지표로 사용하지 않습니다.)")
+
+    if "uploader_count" not in st.session_state:
+        st.session_state.uploader_count = 1
+
+    uploaded_files = []
+    for i in range(st.session_state.uploader_count):
+        f = st.file_uploader(f"주행 로그 CSV 업로드 {i+1}", type=["csv"], key=f"uploader_{i}")
+        if f is not None:
+            uploaded_files.append(f)
+
+    if st.session_state.uploader_count < 5:
+        if st.button("➕ CSV 추가 업로드 공간 만들기"):
+            st.session_state.uploader_count += 1
+            st.rerun()
+
+    use_demo = st.toggle("데모 데이터 사용", value=(not uploaded_files))
+
+    def _generate_demo(n: int = 1200) -> pd.DataFrame:
+        np.random.seed(7)
+
+        weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
+        tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
+
+        # Mask ratio 0~1 (very low when lane is barely visible; can be noisy high in glare)
+        base_ratio = np.random.beta(3, 25, n)  # mostly small ratios
+        base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
+        base_ratio[tod == "Night"] *= 0.8
+        mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
+
+        # Quality 0~100: not identical to ratio (so you can see divergence cases)
+        quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
+        # inject false positives (ratio high but quality low)
+        fp = np.random.rand(n) < 0.03
+        quality[fp] = np.clip(quality[fp] - 50, 0, 100)
+
+        # Error grows when quality low
+        abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
+        err = abs_err * np.random.choice([-1, 1], n)
+
+
+        proc = np.random.normal(28, 5, n)
+        df = pd.DataFrame({
+            TS_COL: np.arange(n) * 100,  # ms
+            WEATHER_COL: weather,
+            TOD_COL: tod,
+            MASK_RATIO_COL: mask_ratio,
+            QUALITY_COL: quality,
+            ERROR_COL: err,
+            PROC_COL: proc,
+        })
+        df[ABS_ERROR_COL] = df[ERROR_COL].abs()
+        return df
+
+    if uploaded_files:
+        dfs = []
+        for f in uploaded_files:
+            try:
+                d = pd.read_csv(f)
+                d = _coalesce_duplicate_columns(d)
+                d = _standardize_columns(d)
+                d = _coalesce_duplicate_columns(d)
+                d = _ensure_fields(d)
+                safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
+                run_id = f"run_{len(dfs)+1:03d}_{safe_name}"
+                d = _add_event_ids_per_run(d, run_id=run_id)
+                dfs.append(d)
+            except Exception as e:
+                st.error(f"CSV 로드 실패 ({f.name}): {e}")
+        
+        if dfs:
+            try:
+                df = pd.concat(dfs, ignore_index=True)
+                df = _coalesce_duplicate_columns(df)
+            except Exception as e:
+                st.error(f"파일 병합 실패: {e}")
+                st.stop()
+    elif use_demo:
+        df = _generate_demo()
+        df = _standardize_columns(df)
+        df = _ensure_fields(df)
+        df = _add_event_ids_per_run(df, run_id="demo")
+
+    if df.empty:
+        st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
+        st.stop()
 
 # Required checks
 missing = [c for c in [MASK_RATIO_COL] if c not in df.columns]
@@ -652,99 +699,114 @@ else:
 # =============================================================================
 # Part III: Environment summary (optional)
 
-st.divider()
-st.markdown("## Part III: 환경(날씨/시간대)별 비교 (선택)")
+if analysis_mode == "파일 업로드 (기본)":
+    st.divider()
+    st.markdown("## Part III: 환경(날씨/시간대)별 비교 (선택)")
 
-def _group_summary(data: pd.DataFrame, group_col: str, metric_col: str, include_unknown: bool) -> pd.DataFrame:
-    d = data.dropna(subset=[group_col, metric_col])
-    if not include_unknown:
-        d = d[d[group_col] != "Unknown"]
-    return (
-        d.groupby(group_col)[metric_col]
-        .agg(
-            num_frames='count',
-            median='median',
-            mean='mean',
-            p25=lambda x: x.quantile(0.25),
-            p75=lambda x: x.quantile(0.75)
+    def _group_summary(data: pd.DataFrame, group_col: str, metric_col: str, include_unknown: bool) -> pd.DataFrame:
+        d = data.dropna(subset=[group_col, metric_col])
+        if not include_unknown:
+            d = d[d[group_col] != "Unknown"]
+        return (
+            d.groupby(group_col)[metric_col]
+            .agg(
+                num_frames='count',
+                median='median',
+                mean='mean',
+                p25=lambda x: x.quantile(0.25),
+                p75=lambda x: x.quantile(0.75)
+            )
+            .reset_index()
+            .sort_values("median", ascending=False)
         )
-        .reset_index()
-        .sort_values("median", ascending=False)
-    )
 
-def _bar_chart(summary: pd.DataFrame, group_col: str, metric_label: str, domain=None, height: int = 320):
-    if summary.empty:
-        st.info("그룹 비교에 사용할 데이터가 없습니다.")
-        return
-    st.altair_chart(
-        alt.Chart(summary, height=height)
-        .mark_bar()
-        .encode(
-            x=alt.X(f"{group_col}:N", sort="-y", axis=alt.Axis(labelAngle=-20)),
-            y=alt.Y("median:Q", scale=alt.Scale(domain=domain) if domain else alt.Scale()),
-            tooltip=[
-                group_col,
-                alt.Tooltip("num_frames:Q", title="frames"),
-                alt.Tooltip("median:Q", format=".4f"),
-                alt.Tooltip("mean:Q", format=".4f"),
-                alt.Tooltip("p25:Q", format=".4f"),
-                alt.Tooltip("p75:Q", format=".4f"),
-            ],
+    def _bar_chart(summary: pd.DataFrame, group_col: str, metric_label: str, domain=None, height: int = 320):
+        if summary.empty:
+            st.info("그룹 비교에 사용할 데이터가 없습니다.")
+            return
+        st.altair_chart(
+            alt.Chart(summary, height=height)
+            .mark_bar()
+            .encode(
+                x=alt.X(f"{group_col}:N", sort="-y", axis=alt.Axis(labelAngle=-20)),
+                y=alt.Y("median:Q", scale=alt.Scale(domain=domain) if domain else alt.Scale()),
+                tooltip=[
+                    group_col,
+                    alt.Tooltip("num_frames:Q", title="frames"),
+                    alt.Tooltip("median:Q", format=".4f"),
+                    alt.Tooltip("mean:Q", format=".4f"),
+                    alt.Tooltip("p25:Q", format=".4f"),
+                    alt.Tooltip("p75:Q", format=".4f"),
+                ],
+            )
+            .properties(title=f"Median of {metric_label} by {group_col}"),
+            use_container_width=True,
         )
-        .properties(title=f"Median of {metric_label} by {group_col}"),
-        use_container_width=True,
-    )
 
-# Decide whether Part III is meaningful (avoid awkward 'Unknown-only' charts)
-group_candidates = []
-for g in [WEATHER_COL, TOD_COL]:
-    if g in df.columns:
-        uniq_non_unknown = df[df[g] != "Unknown"][g].nunique()
-        if uniq_non_unknown >= 2:
-            group_candidates.append(g)
+    # Decide whether Part III is meaningful (avoid awkward 'Unknown-only' charts)
+    group_candidates = []
+    for g in [WEATHER_COL, TOD_COL]:
+        if g in df.columns:
+            uniq_non_unknown = df[df[g] != "Unknown"][g].nunique()
+            if uniq_non_unknown >= 2:
+                group_candidates.append(g)
 
-if not group_candidates:
-    st.info("날씨/시간대 데이터가 없거나 값이 1종류뿐이라 Part III 그룹 비교를 생략합니다.")
-else:
-    include_unknown = st.checkbox("Unknown 포함", value=False)
-    group_col = st.selectbox("그룹 기준", options=group_candidates, index=0)
+    if not group_candidates:
+        st.info("날씨/시간대 데이터가 없거나 값이 1종류뿐이라 Part III 그룹 비교를 생략합니다.")
+    else:
+        include_unknown = st.checkbox("Unknown 포함", value=False)
+        group_col = st.selectbox("그룹 기준", options=group_candidates, index=0)
 
-    metric_options = [
-        (MASK_RATIO_COL, "Mask White Ratio (0~1)", [0, 1]),
-    ]
-    if ABS_ERROR_COL in df.columns:
-        metric_options.append((ABS_ERROR_COL, "Abs Lane Error", None))
-    if PROC_COL in df.columns:
-        metric_options.append((PROC_COL, "Processing Time (ms)", None))
+        metric_options = [
+            (MASK_RATIO_COL, "Mask White Ratio (0~1)", [0, 1]),
+        ]
+        if ABS_ERROR_COL in df.columns:
+            metric_options.append((ABS_ERROR_COL, "Abs Lane Error", None))
+        if PROC_COL in df.columns:
+            metric_options.append((PROC_COL, "Processing Time (ms)", None))
 
-    metric_names = [m[1] for m in metric_options]
-    metric_idx = st.selectbox("비교 지표(중앙값)", options=list(range(len(metric_names))), format_func=lambda i: metric_names[i], index=0)
-    metric_col, metric_label, domain = metric_options[int(metric_idx)]
-    
-    summary = _group_summary(df, group_col, metric_col, include_unknown)
-    
-    # If user includes Unknown and it dominates, still keep it—but warn if it's the only group.
-    if len(summary) <= 1:
-        st.info("선택한 그룹 기준에서 비교 가능한 범주가 1개뿐입니다(대부분 Unknown일 수 있음).")
-    _bar_chart(summary, group_col, metric_label, domain=domain)
-    
-    st.caption("표는 median/mean과 IQR(p25~p75)을 함께 제공합니다. 프레임 수가 적은 그룹은 해석에 주의하세요.")
-    st.dataframe(summary, hide_index=True, use_container_width=True)
+        metric_names = [m[1] for m in metric_options]
+        metric_idx = st.selectbox("비교 지표(중앙값)", options=list(range(len(metric_names))), format_func=lambda i: metric_names[i], index=0)
+        metric_col, metric_label, domain = metric_options[int(metric_idx)]
+        
+        summary = _group_summary(df, group_col, metric_col, include_unknown)
+        
+        # If user includes Unknown and it dominates, still keep it—but warn if it's the only group.
+        if len(summary) <= 1:
+            st.info("선택한 그룹 기준에서 비교 가능한 범주가 1개뿐입니다(대부분 Unknown일 수 있음).")
+        _bar_chart(summary, group_col, metric_label, domain=domain)
+        
+        st.caption("표는 median/mean과 IQR(p25~p75)을 함께 제공합니다. 프레임 수가 적은 그룹은 해석에 주의하세요.")
+        st.dataframe(summary, hide_index=True, use_container_width=True)
 
 # =============================================================================
 # Part IV: Outlier Candidates (rule-first)
 
 st.divider()
-st.markdown("""
-## Part IV: 이상치 후보(룰 기반 태깅)
 
-이 파트는 “원인 확정”이 아니라, **확인 우선순위를 정하기 위한 후보 추출**입니다.
-- Mask White Ratio의 극단(매우 낮음/매우 높음)
-- Abs Lane Error의 상위 분위(있을 때)
-- Processing Time의 상위 분위(있을 때)
-- Lane Error 기록 누락(있을 때)
+if analysis_mode == "0109 고정 데이터 분석":
+    st.markdown("""
+    ## Part III: 이상치 후보(룰 기반 태깅)
 
-""")
+    이 파트는 “원인 확정”이 아니라, **확인 우선순위를 정하기 위한 후보 추출**입니다.
+    - Mask White Ratio의 극단(매우 낮음/매우 높음)
+    - Abs Lane Error의 상위 분위(있을 때)
+    - Processing Time의 상위 분위(있을 때)
+    - Lane Error 기록 누락(있을 때)
+
+    """)
+else:
+    st.markdown("""
+    ## Part IV: 이상치 후보(룰 기반 태깅)
+
+    이 파트는 “원인 확정”이 아니라, **확인 우선순위를 정하기 위한 후보 추출**입니다.
+    - Mask White Ratio의 극단(매우 낮음/매우 높음)
+    - Abs Lane Error의 상위 분위(있을 때)
+    - Processing Time의 상위 분위(있을 때)
+    - Lane Error 기록 누락(있을 때)
+
+    """)
+
 
 # --- thresholds
 low_ratio_th = st.slider("마스크 비율 하한 (매우 낮음)", min_value=0.0, max_value=1.0, value=0.01, step=0.001)
@@ -880,7 +942,10 @@ else:
 # Part V: Top low-mask-ratio frames
 
 st.divider()
-st.markdown("## Part V: 최저 Mask White Ratio 프레임 Top 20 요약")
+if analysis_mode == "0109 고정 데이터 분석":
+    st.markdown("## Part IV: 최저 Mask White Ratio 프레임 Top 20 요약")
+else:
+    st.markdown("## Part V: 최저 Mask White Ratio 프레임 Top 20 요약")
 
 top = df.sort_values(MASK_RATIO_COL).head(20).copy()
 
@@ -915,5 +980,8 @@ st.dataframe(top[show], column_config=_column_config_for(show), height=360)
 # Part VI: Browse
 
 st.divider()
-st.markdown("## Part VI: 전체 로그 보기")
+if analysis_mode == "0109 고정 데이터 분석":
+    st.markdown("## Part V: 전체 로그 보기")
+else:
+    st.markdown("## Part VI: 전체 로그 보기")
 st.dataframe(df, height=560, column_config=_column_config_for(df))
