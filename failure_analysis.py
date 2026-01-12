@@ -242,7 +242,7 @@ if analysis_mode == "0109 고정 데이터 분석":
 
 else:
     st.title("자율주행 실패 분석 (OpenCV 로그: Mask Ratio + Error 중심)")
-    st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다. (Lane Quality Score는 선택 컬럼이며 본 버전의 핵심 지표로 사용하지 않습니다.)")
+    st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다.")
 
     if "uploader_count" not in st.session_state:
         st.session_state.uploader_count = 1
@@ -581,7 +581,7 @@ else:
     a, b = st.columns(2)
     with a:
         st.caption("High-error frames (Abs Error 상위 20)")
-        show_cols = [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ABS_ERROR_COL]
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ABS_ERROR_COL]
         if PROC_COL in df.columns:
             show_cols.append(PROC_COL)
         st.dataframe(
@@ -592,7 +592,7 @@ else:
 
     with b:
         st.caption("Low-ratio frames (Mask Ratio 하위 20)")
-        show_cols = [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL]
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL]
         if ABS_ERROR_COL in df.columns:
             show_cols.append(ABS_ERROR_COL)
         if PROC_COL in df.columns:
@@ -642,7 +642,7 @@ else:
     a, b = st.columns(2)
     with a:
         st.caption("High processing-time frames (상위 20)")
-        show_cols = [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
         if ABS_ERROR_COL in df.columns:
             show_cols.append(ABS_ERROR_COL)
         st.dataframe(
@@ -653,7 +653,7 @@ else:
 
     with b:
         st.caption("Low processing-time frames (하위 20)")
-        show_cols = [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
         if ABS_ERROR_COL in df.columns:
             show_cols.append(ABS_ERROR_COL)
         st.dataframe(
@@ -956,7 +956,7 @@ with c3:
     else:
         st.metric("Avg Proc Time", "N/A")
 
-show = [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL]
+show = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL]
 if ABS_ERROR_COL in top.columns:
     show.append(ABS_ERROR_COL)
 if PROC_COL in top.columns:
@@ -974,4 +974,4 @@ st.dataframe(top[show], column_config=_column_config_for(show), height=360)
 
 st.divider()
 st.markdown("## Part VI: 전체 로그 보기")
-st.dataframe(df, height=560, column_config=_column_config_for(df))
+st.dataframe(df.drop(["Run ID", "Row In Run", "Event ID"], axis=1))
