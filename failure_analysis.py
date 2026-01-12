@@ -24,6 +24,26 @@ TOD_COL = "Time of Day"                # optional
 MODE_COL = "Mode"                    # optional (e.g., auto/manual)
 
 
+
+# Fixed schema (업로드 로그는 아래 8개 컬럼명을 '그대로' 사용한다고 가정)
+FIXED_LOG_COLS = [
+    TS_COL,
+    WEATHER_COL,
+    TOD_COL,
+    MASK_RATIO_COL,
+    QUALITY_COL,
+    ERROR_COL,
+    PROC_COL,
+    MODE_COL,
+]
+
+def _select_fixed_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Select fixed columns in a stable order and fail fast if any are missing."""
+    missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(f"필수 컬럼 누락: {', '.join(missing)}")
+    return df[FIXED_LOG_COLS].copy()
+
 # Synthetic IDs (created at load/merge time)
 RUN_ID_COL = "Run ID"
 ROW_IN_RUN_COL = "Row In Run"
@@ -32,74 +52,9 @@ EVENT_ID_COL = "Event ID"
 # =============================================================================
 # Helpers
 
-def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename common variants to canonical column names."""
-    rename_map = {}
-
-    # Frame / timestamp
-    if TS_COL not in df.columns:
-        for c in ["timestamp", "ts", "time", "t", "Time", "datetime"]:
-            if c in df.columns:
-                rename_map[c] = TS_COL
-                break
-
-    # Quality
-    if QUALITY_COL not in df.columns:
-        for c in ["lane_quality_score", "quality", "LaneQuality", "lane_quality", "Lane Quality"]:
-            if c in df.columns:
-                rename_map[c] = QUALITY_COL
-                break
-
-    # Mask ratio
-    if MASK_RATIO_COL not in df.columns:
-        for c in ["mask_white_ratio", "lane_white_ratio", "white_ratio", "mask_ratio", "MaskWhiteRatio"]:
-            if c in df.columns:
-                rename_map[c] = MASK_RATIO_COL
-                break
-
-    # Error
-    if ERROR_COL not in df.columns:
-        for c in ["error", "lane_error", "LaneError", "target_error", "center_error"]:
-            if c in df.columns:
-                rename_map[c] = ERROR_COL
-                break
-
-    # Processing time
-    if PROC_COL not in df.columns:
-        for c in ["processing_time_ms", "proc_ms", "latency_ms", "inference_ms", "Processing Time"]:
-            if c in df.columns:
-                rename_map[c] = PROC_COL
-                break
-
-    # Environment / mode
-    if WEATHER_COL not in df.columns:
-        for c in ["weather", "Weather Condition"]:
-            if c in df.columns:
-                rename_map[c] = WEATHER_COL
-                break
-    if TOD_COL not in df.columns:
-        for c in ["time_of_day", "tod", "day_night", "DayNight"]:
-            if c in df.columns:
-                rename_map[c] = TOD_COL
-                break
-
-    # Mode (auto/manual etc.)
-    if MODE_COL not in df.columns:
-        for c in ["mode", "Mode", "drive_mode", "Drive Mode", "control_mode", "Control Mode", "autonomous_mode", "Auto Mode"]:
-            if c in df.columns:
-                rename_map[c] = MODE_COL
-                break
-
-    if rename_map:
-        df = df.rename(columns=rename_map)
-    return df
-
-
 def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
-    """Fill convenience columns and sanitize ratio/quality ranges."""
-    # Required columns check happens later, but we can sanitize if present:
     if QUALITY_COL in df.columns:
-        q = pd.to_numeric(df[QUALITY_COL], errors="coerce")
+        q = pd.to_numeric(df[QUALITY_COL], errors="coerce") # 수치형 데이터로 변환, 불가능 시 NaN 값 반환
         df[QUALITY_COL] = q.clip(0, 100)
 
     if MASK_RATIO_COL in df.columns:
@@ -118,36 +73,6 @@ def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
         df[TOD_COL] = "Unknown"
 
     return df
-
-
-def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """If df has duplicate column names, coalesce them into a single column (left-to-right fillna)."""
-    if df.columns.is_unique:
-        return df
-
-    out = df.copy()
-    seen = set()
-
-    for col in list(out.columns):
-        if col in seen:
-            continue
-
-        matches = [i for i, c in enumerate(out.columns) if c == col]
-        if len(matches) <= 1:
-            seen.add(col)
-            continue
-
-        block = out.loc[:, col]  # DataFrame when duplicates exist
-        base = block.iloc[:, 0]
-        for j in range(1, block.shape[1]):
-            base = base.fillna(block.iloc[:, j])
-        out[col] = base
-
-        drop_positions = matches[1:]
-        out = out.drop(out.columns[drop_positions], axis=1)
-        seen.add(col)
-
-    return out
 
 
 def _make_tooltip(df: pd.DataFrame, wanted: list[str]) -> list[str]:
@@ -228,7 +153,7 @@ def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: i
 
 analysis_mode = st.sidebar.radio(
     "분석 모드",
-    ["파일 업로드 (기본)", "0109 고정 데이터 분석"],
+    ["파일 업로드 (기본)", "0109 고정 데이터 분석", "0112 고정 데이터 분석"],
     index=0
 )
 
@@ -238,6 +163,12 @@ if analysis_mode == "0109 고정 데이터 분석":
     # 0109 고정 데이터 분석은 별도 모듈(failure_analysis_0109.py)로 위임합니다.
     import failure_analysis_0109 as page_0109
     page_0109.render()
+    st.stop()
+
+if analysis_mode == "0112 고정 데이터 분석":
+    # 0112 고정 데이터 분석은 별도 모듈(failure_analysis_0112.py)로 위임합니다.
+    import failure_analysis_0112 as page_0112
+    page_0112.render()
     st.stop()
 
 else:
@@ -284,6 +215,7 @@ else:
 
 
         proc = np.random.normal(28, 5, n)
+        mode = np.random.choice(["AUTO", "MANUAL"], n, p=[0.9, 0.1])
         df = pd.DataFrame({
             TS_COL: np.arange(n) * 100,  # ms
             WEATHER_COL: weather,
@@ -292,6 +224,7 @@ else:
             QUALITY_COL: quality,
             ERROR_COL: err,
             PROC_COL: proc,
+            MODE_COL: mode,
         })
         df[ABS_ERROR_COL] = df[ERROR_COL].abs()
         return df
@@ -301,27 +234,26 @@ else:
         for f in uploaded_files:
             try:
                 d = pd.read_csv(f)
-                d = _coalesce_duplicate_columns(d)
-                d = _standardize_columns(d)
-                d = _coalesce_duplicate_columns(d)
+
+                # 고정 스키마: 컬럼명은 이미 정해져 있으므로 전처리(리네임/중복 컬럼 병합)는 생략
+                d = _select_fixed_columns(d)
                 d = _ensure_fields(d)
+
                 safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
                 run_id = f"run_{len(dfs)+1:03d}_{safe_name}"
                 d = _add_event_ids_per_run(d, run_id=run_id)
                 dfs.append(d)
             except Exception as e:
                 st.error(f"CSV 로드 실패 ({f.name}): {e}")
-        
+
         if dfs:
             try:
                 df = pd.concat(dfs, ignore_index=True)
-                df = _coalesce_duplicate_columns(df)
             except Exception as e:
                 st.error(f"파일 병합 실패: {e}")
                 st.stop()
     elif use_demo:
         df = _generate_demo()
-        df = _standardize_columns(df)
         df = _ensure_fields(df)
         df = _add_event_ids_per_run(df, run_id="demo")
 
@@ -329,14 +261,14 @@ else:
         st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
         st.stop()
 
-# Required checks
-missing = [c for c in [MASK_RATIO_COL] if c not in df.columns]
+# Required checks (고정 스키마 기준)
+missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
 if missing:
     st.error(
-        "필수 컬럼이 없습니다. (이 버전은 Mask White Ratio 중심으로 분석합니다.)\n\n"
-        f"- 필수: {MASK_RATIO_COL}\n"
+        "필수 컬럼이 없습니다. (이 버전은 고정 컬럼 스키마를 사용합니다.)\n\n"
+        f"- 필수: {', '.join(FIXED_LOG_COLS)}\n"
         f"- 누락: {', '.join(missing)}\n\n"
-        "※ ratio는 0~1 또는 0~100(%) 모두 허용되며 자동 정규화됩니다."
+        "※ Mask White Ratio는 0~1 또는 0~100(%) 모두 허용되며 자동 정규화됩니다."
     )
     st.stop()
 
@@ -354,6 +286,7 @@ COLUMN_CONFIG = {
     PROC_COL: st.column_config.NumberColumn(format="%.1f ms"),
     WEATHER_COL: st.column_config.TextColumn(),
     TOD_COL: st.column_config.TextColumn(),
+    MODE_COL: st.column_config.TextColumn(),
     RUN_ID_COL: st.column_config.TextColumn(),
     ROW_IN_RUN_COL: st.column_config.NumberColumn(format="%.0f"),
     EVENT_ID_COL: st.column_config.TextColumn(),
@@ -940,7 +873,7 @@ else:
 st.divider()
 st.markdown("## Part V: 최저 Mask White Ratio 프레임 Top 20 요약")
 
-top = df.sort_values(MASK_RATIO_COL).head(20).copy()
+top = df[df[MASK_RATIO_COL] != 0].sort_values(MASK_RATIO_COL).head(20).copy()
 
 c1, c2, c3 = st.columns(3)
 with c1:

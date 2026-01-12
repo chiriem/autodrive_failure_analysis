@@ -36,7 +36,7 @@ ROW_IN_RUN_COL = "Row In Run"
 EVENT_ID_COL = "Event ID"
 
 # -----------------------------------------------------------------------------
-_FIXED_FILENAMES = ["0109_11_log.csv"]
+_FIXED_FILENAMES = ["0112_11_log.csv"]
 
 _FIXED_COLUMNS = [
     TS_COL,            # "Timestamp"
@@ -51,7 +51,7 @@ _FIXED_COLUMNS = [
 
 @st.cache_data(show_spinner=False)
 def _load_fixed_data() -> pd.DataFrame:
-    """Load the fixed 0109 dataset (fixed schema; no column-name preprocessing)."""
+    """Load the fixed 0112 dataset (fixed schema; no column-name preprocessing)."""
     base = Path(__file__).resolve().parent
     candidates: list[Path] = []
     for name in _FIXED_FILENAMES:
@@ -65,8 +65,8 @@ def _load_fixed_data() -> pd.DataFrame:
     found = next((p for p in candidates if p.exists()), None)
     if found is None:
         raise FileNotFoundError(
-            "0109 고정 데이터 파일을 찾을 수 없습니다. "
-            "다음 위치 중 하나에 '0109_11_log.csv'를 두세요: "
+            "0112 고정 데이터 파일을 찾을 수 없습니다. "
+            "다음 위치 중 하나에 '0112_11_log.csv'를 두세요: "
             "./data/, 현재 폴더, 또는 이 스크립트와 같은 폴더/그 하위 data 폴더."
         )
 
@@ -110,8 +110,74 @@ def _load_fixed_data() -> pd.DataFrame:
         d[c] = d[c].astype("string").fillna("Unknown")
 
     # 4) Event ID 생성 (기존 로직 유지)
+    d = _add_event_ids_per_run(d, run_id="run_0112_fixed")
+    return d
+
+
+# -----------------------------------------------------------------------------
+# 0109 baseline (for Part X comparison)
+_BASELINE_0109_FILENAMES = ["0109_11_log.csv"]
+
+@st.cache_data(show_spinner=False)
+def _load_fixed_data_0109_baseline() -> pd.DataFrame:
+    """Load the fixed 0109 dataset (same fixed schema) for comparison in Part X.
+
+    If the baseline CSV is not present, Part X will simply skip the comparison section.
+    """
+    base_dir = Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    for name in _BASELINE_0109_FILENAMES:
+        candidates.extend([
+            Path("data") / name,
+            Path(name),
+            base_dir / "data" / name,
+            base_dir / name,
+        ])
+
+    found = next((pp for pp in candidates if pp.exists()), None)
+    if found is None:
+        raise FileNotFoundError(
+            "0109 비교용 데이터 파일을 찾을 수 없습니다. "
+            "Part X에서 0109 대비 비교를 하려면 '0109_11_log.csv'를 "
+            "./data/, 현재 폴더, 또는 이 스크립트와 같은 폴더/그 하위 data 폴더에 두세요."
+        )
+
+    d = pd.read_csv(found)
+
+    # 1) 고정 컬럼 존재 체크
+    missing = [c for c in _FIXED_COLUMNS if c not in d.columns]
+    if missing:
+        raise ValueError(
+            "0109 CSV에 필요한 고정 컬럼이 없습니다.\n"
+            f"- 누락: {', '.join(missing)}\n"
+            f"- 필요: {', '.join(_FIXED_COLUMNS)}"
+        )
+
+    # 2) 컬럼 순서/필요 컬럼만 유지
+    d = d[_FIXED_COLUMNS].copy()
+
+    # 3) 타입/값 최소 정리 (0112과 동일한 규칙)
+    d[TS_COL] = pd.to_numeric(d[TS_COL], errors="coerce")
+
+    r = pd.to_numeric(d[MASK_RATIO_COL], errors="coerce")
+    r = np.where(r > 1.5, r / 100.0, r)
+    d[MASK_RATIO_COL] = pd.to_numeric(r, errors="coerce").clip(0, 1)
+
+    q = pd.to_numeric(d[QUALITY_COL], errors="coerce")
+    d[QUALITY_COL] = q.clip(0, 100)
+
+    e = pd.to_numeric(d[ERROR_COL], errors="coerce")
+    d[ERROR_COL] = e
+    d[ABS_ERROR_COL] = e.abs()
+
+    d[PROC_COL] = pd.to_numeric(d[PROC_COL], errors="coerce")
+
+    for c in [WEATHER_COL, TOD_COL, MODE_COL]:
+        d[c] = d[c].astype("string").fillna("Unknown")
+
     d = _add_event_ids_per_run(d, run_id="run_0109_fixed")
     return d
+
 from pathlib import Path
 import re
 import textwrap
@@ -198,7 +264,7 @@ def render() -> None:
     _maybe_set_page_config()
     # UI
 
-    st.title("0109 자율주행 실패 분석")
+    st.title("0112 자율주행 실패 분석")
     st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다.")
 
     df = pd.DataFrame()
@@ -566,7 +632,7 @@ def render() -> None:
         max_value=99,
         value=95,
         step=1,
-        key="outlier_sensitivity_pctl_0109",
+        key="outlier_sensitivity_pctl_0112",
         help="높을수록 더 극단(상위/하위 꼬리)만 후보로 잡습니다. (오차/처리시간: 상위 pctl, 마스크비율: 하위(100-pctl) 및 상위 pctl)"
     )
 
@@ -774,126 +840,280 @@ def render() -> None:
 # =============================================================================
 # Part X: Improvements (analysis-driven)
 
+
 def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = None) -> None:
     st.divider()
     st.markdown("## Part X: 자율주행 개선사항 (분석 기반)")
-    
-    # --- compute key stats from the same dataset shown above
-    n_total = int(len(df))
-    
-    ratio = pd.to_numeric(df.get(MASK_RATIO_COL), errors="coerce").clip(0, 1)
-    ratio_valid = ratio.dropna()
-    
-    # use the same sensitivity (pctl) as Part III so that the narrative matches the candidate extraction thresholds
-    low_th = high_th = None
-    low_rate = high_rate = None
-    if not ratio_valid.empty:
-        low_th = float(ratio_valid.quantile((100 - pctl) / 100.0))
-        high_th = float(ratio_valid.quantile(pctl / 100.0))
-        valid_mask = ratio.notna()
-        low_rate = float((ratio[valid_mask] <= low_th).mean() * 100.0)
-        high_rate = float((ratio[valid_mask] >= high_th).mean() * 100.0)
-    
-    err_missing_rate = None
-    if ERROR_COL in df.columns:
-        err_missing_rate = float(pd.to_numeric(df[ERROR_COL], errors="coerce").isna().mean() * 100.0)
-    
-    abs_p95 = abs_p99 = None
-    abs_tail_rate = None
-    abs_tail_th = None
-    if ABS_ERROR_COL in df.columns:
-        ae = pd.to_numeric(df[ABS_ERROR_COL], errors="coerce")
-        if ae.notna().any():
-            abs_p95 = float(ae.quantile(0.95))
-            abs_p99 = float(ae.quantile(0.99))
-            abs_tail_th = float(ae.quantile(pctl / 100.0))
-            abs_tail_rate = float((ae >= abs_tail_th).mean() * 100.0)
-    
-    proc_p95 = proc_p99 = proc_max = None
-    proc_tail_rate = None
-    proc_tail_th = None
-    if PROC_COL in df.columns:
-        pr = pd.to_numeric(df[PROC_COL], errors="coerce")
-        if pr.notna().any():
-            proc_p95 = float(pr.quantile(0.95))
-            proc_p99 = float(pr.quantile(0.99))
-            proc_max = float(pr.max())
-            proc_tail_th = float(pr.quantile(pctl / 100.0))
-            proc_tail_rate = float((pr >= proc_tail_th).mean() * 100.0)
-    
-    st.markdown("### 핵심 지표 요약")
+
+    # -------------------------------------------------------------------------
+    # Metric helpers (same rules for 0112 + 0109 so we can compare apples-to-apples)
+    def _to_num(s: pd.Series) -> pd.Series:
+        return pd.to_numeric(s, errors="coerce")
+
+    def _metrics(xdf: pd.DataFrame) -> dict:
+        m: dict = {}
+        m["n_total"] = int(len(xdf))
+
+        # Mask ratio
+        ratio = _to_num(xdf.get(MASK_RATIO_COL)).clip(0, 1)
+        rv = ratio.dropna()
+        if rv.empty:
+            m.update({
+                "ratio_p05": None, "ratio_p50": None, "ratio_p95": None,
+                "low_th": None, "high_th": None, "low_rate": None, "high_rate": None,
+            })
+        else:
+            m["ratio_p05"] = float(rv.quantile(0.05))
+            m["ratio_p50"] = float(rv.quantile(0.50))
+            m["ratio_p95"] = float(rv.quantile(0.95))
+            m["low_th"] = float(rv.quantile((100 - pctl) / 100.0))
+            m["high_th"] = float(rv.quantile(pctl / 100.0))
+
+            valid = ratio.notna()
+            m["low_rate"] = float((ratio[valid] <= m["low_th"]).mean() * 100.0)
+            m["high_rate"] = float((ratio[valid] >= m["high_th"]).mean() * 100.0)
+
+        # Lane Error missingness
+        if ERROR_COL in xdf.columns:
+            m["err_missing_rate"] = float(_to_num(xdf[ERROR_COL]).isna().mean() * 100.0)
+        else:
+            m["err_missing_rate"] = None
+
+        # Abs error
+        if ABS_ERROR_COL in xdf.columns:
+            ae = _to_num(xdf[ABS_ERROR_COL])
+            aev = ae.dropna()
+            if aev.empty:
+                m.update({"abs_p95": None, "abs_p99": None, "abs_tail_th": None, "abs_tail_rate": None})
+            else:
+                m["abs_p95"] = float(aev.quantile(0.95))
+                m["abs_p99"] = float(aev.quantile(0.99))
+                m["abs_tail_th"] = float(aev.quantile(pctl / 100.0))
+                m["abs_tail_rate"] = float((aev >= m["abs_tail_th"]).mean() * 100.0)
+        else:
+            m.update({"abs_p95": None, "abs_p99": None, "abs_tail_th": None, "abs_tail_rate": None})
+
+        # Processing time
+        if PROC_COL in xdf.columns:
+            pr = _to_num(xdf[PROC_COL])
+            prv = pr.dropna()
+            if prv.empty:
+                m.update({"proc_p95": None, "proc_p99": None, "proc_max": None, "proc_tail_th": None, "proc_tail_rate": None})
+            else:
+                m["proc_p95"] = float(prv.quantile(0.95))
+                m["proc_p99"] = float(prv.quantile(0.99))
+                m["proc_max"] = float(prv.max())
+                m["proc_tail_th"] = float(prv.quantile(pctl / 100.0))
+                m["proc_tail_rate"] = float((prv >= m["proc_tail_th"]).mean() * 100.0)
+        else:
+            m.update({"proc_p95": None, "proc_p99": None, "proc_max": None, "proc_tail_th": None, "proc_tail_rate": None})
+
+        return m
+
+    def _fmt(v, fmt: str) -> str:
+        if v is None:
+            return "N/A"
+        try:
+            if pd.isna(v):
+                return "N/A"
+        except Exception:
+            pass
+        return fmt.format(v)
+
+    cur = _metrics(df)
+
+    # -------------------------------------------------------------------------
+    # Current summary
+    st.markdown("### 핵심 지표 요약 (0112)")
     summary_rows = [
-        {"항목": "총 프레임 수", "값": f"{n_total:,}", "의미": "분석 대상 전체 행 수"},
+        {"항목": "총 프레임 수", "값": f"{cur['n_total']:,}", "의미": "분석 대상 전체 행 수"},
+        {"항목": "Mask Ratio p05 / p50 / p95", "값": f"{_fmt(cur['ratio_p05'], '{:.4f}')} / {_fmt(cur['ratio_p50'], '{:.4f}')} / {_fmt(cur['ratio_p95'], '{:.4f}')}", "의미": "마스크 검출량의 하위/중앙/상위 수준(0~1)"},
     ]
-    if low_th is not None:
-        summary_rows.append({"항목": f"Mask Ratio 하한(하위 {100 - pctl}% 분위)", "값": f"{low_th:.4f}", "의미": "차선 픽셀량이 매우 낮은 꼬리 구간 기준"})
-        summary_rows.append({"항목": "Mask Ratio 하한 이하 비율", "값": f"{low_rate:.2f}%", "의미": "저가시성/미검출 후보 비중(비율 자체가 원인이라고 단정 불가)"})
-        summary_rows.append({"항목": f"Mask Ratio 상한(상위 {100 - pctl}% 분위)", "값": f"{high_th:.4f}", "의미": "차선 픽셀량이 매우 높은 꼬리 구간 기준"})
-        summary_rows.append({"항목": "Mask Ratio 상한 이상 비율", "값": f"{high_rate:.2f}%", "의미": "과검출 후보 비중(반사/노이즈 가능성은 '추측'이며 영상 확인 필요)"})
-    if err_missing_rate is not None:
-        summary_rows.append({"항목": "Lane Error 결측률", "값": f"{err_missing_rate:.2f}%", "의미": "오차 기반 분석/모니터링이 불가한 구간 비중"})
-    if abs_p95 is not None:
-        summary_rows.append({"항목": "Abs Error p95 / p99", "값": f"{abs_p95:.2f} / {abs_p99:.2f}", "의미": "오차 분포의 상위 꼬리 크기(픽셀 단위)"})
-        summary_rows.append({"항목": f"Abs Error 상위 {100 - pctl}% 기준", "값": f"{abs_tail_th:.2f} (≈ {abs_tail_rate:.2f}%)", "의미": "Part III 후보(오차 과다) 기준과 동일"})
-    if proc_p95 is not None:
-        summary_rows.append({"항목": "Proc Time p95 / p99 / max", "값": f"{proc_p95:.1f} / {proc_p99:.1f} / {proc_max:.1f} ms", "의미": "지연의 꼬리(outlier) 크기"})
-        summary_rows.append({"항목": f"Proc Time 상위 {100 - pctl}% 기준", "값": f"{proc_tail_th:.1f} ms (≈ {proc_tail_rate:.2f}%)", "의미": "Part III 후보(처리시간 과다) 기준과 동일"})
-    
+
+    if cur["low_th"] is not None:
+        summary_rows.append({"항목": f"Mask Ratio 하한(하위 {100 - pctl}% 분위)", "값": _fmt(cur["low_th"], "{:.4f}"), "의미": "매우 낮은 검출량(저가시성/미검출 후보) 기준"})
+        summary_rows.append({"항목": "Mask Ratio 하한 이하 비율", "값": _fmt(cur["low_rate"], "{:.2f}%"), "의미": "꼬리 구간 비중(원인 단정 불가)"})
+        summary_rows.append({"항목": f"Mask Ratio 상한(상위 {100 - pctl}% 분위)", "값": _fmt(cur["high_th"], "{:.4f}"), "의미": "매우 높은 검출량(과검출 후보) 기준"})
+        summary_rows.append({"항목": "Mask Ratio 상한 이상 비율", "값": _fmt(cur["high_rate"], "{:.2f}%"), "의미": "꼬리 구간 비중(원인 단정 불가)"})
+
+    if cur["err_missing_rate"] is not None:
+        summary_rows.append({"항목": "Lane Error 결측률", "값": _fmt(cur["err_missing_rate"], "{:.2f}%"), "의미": "오차 기반 분석/모니터링이 불가한 구간 비중"})
+
+    if cur["abs_p95"] is not None:
+        summary_rows.append({"항목": "Abs Error p95 / p99", "값": f"{_fmt(cur['abs_p95'], '{:.2f}')} / {_fmt(cur['abs_p99'], '{:.2f}')}", "의미": "오차 분포 상위 꼬리(픽셀 단위) 크기"})
+        summary_rows.append({"항목": f"Abs Error 상위 {100 - pctl}% 기준", "값": f"{_fmt(cur['abs_tail_th'], '{:.2f}')} (≈ {_fmt(cur['abs_tail_rate'], '{:.2f}%')})", "의미": "Part III 후보(오차 과다) 임계값과 동일"})
+
+    if cur["proc_p95"] is not None:
+        summary_rows.append({"항목": "Proc Time p95 / p99 / max", "값": f"{_fmt(cur['proc_p95'], '{:.1f}')} / {_fmt(cur['proc_p99'], '{:.1f}')} / {_fmt(cur['proc_max'], '{:.1f}')} ms", "의미": "지연의 상위 꼬리(outlier) 크기"})
+        summary_rows.append({"항목": f"Proc Time 상위 {100 - pctl}% 기준", "값": f"{_fmt(cur['proc_tail_th'], '{:.1f}')} ms (≈ {_fmt(cur['proc_tail_rate'], '{:.2f}%')})", "의미": "Part III 후보(처리시간 과다) 임계값과 동일"})
+
     st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
-    
-    # --- summarize candidate tags (if any)
-    st.markdown("### 후보(Part III) 분포 요약")
-    tag_lines = []
+
+    # -------------------------------------------------------------------------
+    # Candidate distribution (current)
+    st.markdown("### 후보(Part III) 분포 요약 (0112)")
     if isinstance(cand, pd.DataFrame) and (not cand.empty) and ("Primary Tag" in cand.columns):
         vc = cand["Primary Tag"].value_counts(dropna=False)
-        top_items = vc.head(6)
         total_cand = int(len(cand))
-        for k, v in top_items.items():
-            tag_lines.append(f"- {k}: {int(v)}건 (전체 대비 {(v / n_total * 100.0):.2f}%, 후보 내 {(v / total_cand * 100.0):.2f}%)")
-        st.markdown("\n".join(tag_lines))
+        lines = []
+        for k, v in vc.head(6).items():
+            lines.append(f"- {k}: {int(v)}건 (전체 대비 {(v / cur['n_total'] * 100.0):.2f}%, 후보 내 {(v / total_cand * 100.0):.2f}%)")
+        st.markdown("\n".join(lines))
     else:
         st.info("현재 민감도 설정에서 후보가 없거나, 후보 태그를 만들 수 없는 구성입니다.")
-    
-    # --- recommendations (kept actionable, but avoid asserting root causes without evidence)
+
+    # -------------------------------------------------------------------------
+    # 0109 baseline comparison (optional)
+    st.markdown("### 0109 대비 변화 (0112 - 0109)")
+    baseline_metrics = None
+    try:
+        base_df = _load_fixed_data_0109_baseline()
+        baseline_metrics = _metrics(base_df)
+    except FileNotFoundError:
+        st.info("0109 비교용 파일(0109_11_log.csv)이 없어 비교를 생략합니다. (파일을 두면 자동 비교됩니다.)")
+    except Exception as e:
+        st.warning(f"0109 비교 로드/계산 중 오류로 비교를 생략합니다: {e}")
+
+    def _delta(cur_v, base_v):
+        if (cur_v is None) or (base_v is None):
+            return None
+        try:
+            if pd.isna(cur_v) or pd.isna(base_v):
+                return None
+        except Exception:
+            pass
+        return float(cur_v) - float(base_v)
+
+    def _judge(delta_v: float | None, better_when: str) -> str:
+        if delta_v is None:
+            return "N/A"
+        # small epsilon to avoid noise-driven wording
+        eps = 1e-9
+        if abs(delta_v) <= eps:
+            return "거의 동일"
+        if better_when == "lower":
+            return "개선(↓)" if delta_v < 0 else "악화(↑)"
+        if better_when == "higher":
+            return "개선(↑)" if delta_v > 0 else "악화(↓)"
+        return "참고"
+
+    if baseline_metrics is not None:
+        cmp_rows = []
+
+        # Mask ratio: use p05/p50 as more meaningful than tail rates (tail rates are quantile-defined)
+        for name, key, better, fmt in [
+            ("Mask Ratio p05", "ratio_p05", "higher", "{:.4f}"),
+            ("Mask Ratio p50(중앙값)", "ratio_p50", "higher", "{:.4f}"),
+        ]:
+            b = baseline_metrics.get(key)
+            c = cur.get(key)
+            dlt = _delta(c, b)
+            cmp_rows.append({
+                "지표": name,
+                "0109": None if b is None else float(b),
+                "0112": None if c is None else float(c),
+                "Δ(0112-0109)": dlt,
+                "판정": _judge(dlt, better),
+                "설명": "높을수록 '최저/평균 가시성'이 좋아졌을 가능성(추측) — 영상 확인 필요",
+            })
+
+        # Missing rate / error / proc: lower is better (more stable)
+        for name, key, better, note in [
+            ("Lane Error 결측률(%)", "err_missing_rate", "lower", "낮을수록 오차 기반 모니터링/튜닝이 쉬움"),
+            ("Abs Error p95", "abs_p95", "lower", "낮을수록 상위 꼬리 오차가 줄어듦"),
+            ("Abs Error p99", "abs_p99", "lower", "낮을수록 극단 오차가 줄어듦"),
+            ("Proc Time p95(ms)", "proc_p95", "lower", "낮을수록 지연 상위 꼬리가 줄어듦"),
+            ("Proc Time p99(ms)", "proc_p99", "lower", "낮을수록 극단 지연이 줄어듦"),
+            ("Proc Time max(ms)", "proc_max", "lower", "낮을수록 최악 지연이 줄어듦"),
+        ]:
+            b = baseline_metrics.get(key)
+            c = cur.get(key)
+            dlt = _delta(c, b)
+            cmp_rows.append({
+                "지표": name,
+                "0109": None if b is None else float(b),
+                "0112": None if c is None else float(c),
+                "Δ(0112-0109)": dlt,
+                "판정": _judge(dlt, better),
+                "설명": note,
+            })
+
+        cmp_df = pd.DataFrame(cmp_rows)
+        st.dataframe(cmp_df, hide_index=True, use_container_width=True)
+
+        # One-paragraph narrative (keep it non-assertive)
+        bullets = []
+        d1 = _delta(cur.get("err_missing_rate"), baseline_metrics.get("err_missing_rate"))
+        if d1 is not None:
+            bullets.append(f"- Lane Error 결측률: {_fmt(baseline_metrics.get('err_missing_rate'), '{:.2f}%')} → {_fmt(cur.get('err_missing_rate'), '{:.2f}%')} (Δ{d1:+.2f}pp)")
+        d2 = _delta(cur.get("abs_p95"), baseline_metrics.get("abs_p95"))
+        if d2 is not None:
+            bullets.append(f"- Abs Error p95: {_fmt(baseline_metrics.get('abs_p95'), '{:.2f}')} → {_fmt(cur.get('abs_p95'), '{:.2f}')} (Δ{d2:+.2f})")
+        d3 = _delta(cur.get("proc_p95"), baseline_metrics.get("proc_p95"))
+        if d3 is not None:
+            bullets.append(f"- Proc Time p95: {_fmt(baseline_metrics.get('proc_p95'), '{:.1f}')}ms → {_fmt(cur.get('proc_p95'), '{:.1f}')}ms (Δ{d3:+.1f}ms)")
+        if bullets:
+            st.markdown("#### 요약(핵심 변화)")
+            st.markdown("\n".join(bullets))
+
+    # -------------------------------------------------------------------------
+    # Recommendations (kept actionable, avoid asserting root causes)
     st.markdown("### 개선사항(권장 우선순위)")
-    recos = []
+    recos: list[str] = []
 
-    if low_rate is not None and low_rate >= 5.0:
+    if cur["low_rate"] is not None and cur["low_rate"] >= 5.0:
         recos.append(
-            f"1) **선이 잘 안 보이는 구간 대비**: Mask Ratio가 아주 낮은 프레임이 {low_rate:.2f}% 있음(≤ {low_th:.4f}). "
-            "→ 어둠/그림자/역광 등에서 선이 약해질 수 있으니, (a) 밝기/대비 보정, (b) ROI/전처리 조정, "
-            "(c) 선이 안 잡히면 감속/안전 동작으로 전환 같은 규칙을 정하고 테스트하기."
+            f"1) **선이 잘 안 보이는 구간 대비**: Mask Ratio가 아주 낮은 프레임이 {cur['low_rate']:.2f}% 있음(≤ {cur['low_th']:.4f}). "
+            "→ (a) 밝기/대비 보정, (b) ROI/전처리 조정, (c) 선이 안 잡히면 감속/안전 동작으로 전환 같은 규칙을 정하고 테스트하기."
         )
 
-    if high_rate is not None and high_rate >= 5.0:
+    if cur["high_rate"] is not None and cur["high_rate"] >= 5.0:
         recos.append(
-            f"2) **과하게 잡히는 경우 줄이기**: Mask Ratio가 아주 높은 프레임이 {high_rate:.2f}% 있음(≥ {high_th:.4f}). "
-            "→ 반사/밝은 노이즈/테이프가 선으로 잡힐 가능성이 있으니, 작은 잡음 제거/모양 필터/좌우 균형 체크 같은 후처리를 검토."
+            f"2) **과하게 잡히는 경우 줄이기**: Mask Ratio가 아주 높은 프레임이 {cur['high_rate']:.2f}% 있음(≥ {cur['high_th']:.4f}). "
+            "→ 반사/밝은 노이즈/테이프가 선으로 잡힐 가능성(추측)이 있으니, 작은 잡음 제거/모양 필터/좌우 균형 체크 같은 후처리를 검토."
         )
 
-    if abs_p95 is not None and abs_p95 > 0:
+    if cur["abs_p95"] is not None and cur["abs_p95"] > 0:
+        extra = ""
+        if baseline_metrics is not None and baseline_metrics.get("abs_p95") is not None:
+            dlt = _delta(cur["abs_p95"], baseline_metrics["abs_p95"])
+            if dlt is not None:
+                extra = f" (0109 대비 p95 Δ{dlt:+.2f})"
         recos.append(
-            f"3) **조향 튀는 현상 완화**: Abs Error가 큰 구간(p95={abs_p95:.2f}px, p99={abs_p99:.2f}px)이 존재. "
+            f"3) **조향 튀는 현상 완화**: Abs Error가 큰 구간(p95={cur['abs_p95']:.2f}px, p99={_fmt(cur['abs_p99'], '{:.2f}') }px){extra}. "
             "→ (a) 오차/조향각을 시간적으로 부드럽게(평균/필터), (b) 조향 변화량 상한 설정, "
-            "(c) 한쪽 차선만 보일 때 쓰는 가정값(차선 폭 등)이 문제를 키우지 않는지 점검하기."
+            "(c) 한쪽 차선만 보일 때 쓰는 가정값(차선 폭 등)이 문제를 키우지 않는지 점검."
         )
 
-    if err_missing_rate is not None and err_missing_rate >= 10.0:
+    if cur["err_missing_rate"] is not None and cur["err_missing_rate"] >= 10.0:
+        extra = ""
+        if baseline_metrics is not None and baseline_metrics.get("err_missing_rate") is not None:
+            dlt = _delta(cur["err_missing_rate"], baseline_metrics["err_missing_rate"])
+            if dlt is not None:
+                extra = f" (0109 대비 Δ{dlt:+.2f}pp)"
         recos.append(
-            f"4) **로그 품질 개선**: Lane Error가 결측값으로 나오는 비율이 {err_missing_rate:.2f}%로 상당히 높음. "
-            "→ NA가 나오는 상황도 '차선 미검출/한쪽만 검출/모드' 같은 상태를 함께 저장할 것을 추천함. "
-            "→ 어떤 조건에서 NA가 많이 생기는지 요약 가능."
+            f"4) **로그 품질 개선**: Lane Error 결측률이 {cur['err_missing_rate']:.2f}%로 높음{extra}. "
+            "→ NA가 나오는 상황도 '차선 미검출/한쪽만 검출/모드' 같은 상태를 함께 저장하고, 어떤 조건에서 NA가 많이 생기는지 요약해보기."
         )
 
-    if proc_p95 is not None:
+    if cur["proc_p95"] is not None:
+        extra = ""
+        if baseline_metrics is not None and baseline_metrics.get("proc_p95") is not None:
+            dlt = _delta(cur["proc_p95"], baseline_metrics["proc_p95"])
+            if dlt is not None:
+                extra = f" (0109 대비 p95 Δ{dlt:+.1f}ms)"
         recos.append(
-            f"5) **처리시간 튐 감소**: 처리시간 p95={proc_p95:.1f}ms, p99={proc_p99:.1f}ms, max={proc_max:.1f}ms. "
-            "→ (a) 단계별 시간 측정으로 병목 찾기, (b) 해상도/ROI 줄이기"
+            f"5) **처리시간 튐 감소**: 처리시간 p95={cur['proc_p95']:.1f}ms, p99={_fmt(cur['proc_p99'], '{:.1f}') }ms, max={_fmt(cur['proc_max'], '{:.1f}') }ms{extra}. "
+            "→ (a) 단계별 시간 측정으로 병목 찾기, (b) 해상도/ROI 줄이기, (c) 모델/후처리 경량화 검토."
         )
 
-    for line in recos:
-        st.markdown(f"- {line}")    
-    
-    if __name__ == "__main__":
+    if not recos:
+        st.info("현재 데이터 기준으로는 즉시 추천할 항목이 없습니다. (민감도/컬럼/데이터 범위를 확인해 주세요.)")
+    else:
+        for line in recos:
+            st.markdown(f"- {line}")
+
+
+if __name__ == "__main__":
         render()
 
