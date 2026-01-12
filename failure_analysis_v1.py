@@ -153,7 +153,7 @@ def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: i
 
 analysis_mode = st.sidebar.radio(
     "분석 모드",
-    ["파일 업로드 (기본)", "0109 고정 데이터 분석", "0112 고정 데이터 분석"],
+    ["파일 업로드 (기본)", "0109 고정 데이터 분석"],
     index=0
 )
 
@@ -163,12 +163,6 @@ if analysis_mode == "0109 고정 데이터 분석":
     # 0109 고정 데이터 분석은 별도 모듈(failure_analysis_0109.py)로 위임합니다.
     import failure_analysis_0109 as page_0109
     page_0109.render()
-    st.stop()
-
-if analysis_mode == "0112 고정 데이터 분석":
-    # 0112 고정 데이터 분석은 별도 모듈(failure_analysis_0112.py)로 위임합니다.
-    import failure_analysis_0112 as page_0112
-    page_0112.render()
     st.stop()
 
 else:
@@ -1066,240 +1060,90 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
     return metrics
 
 
-def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
-    """
-    계산된 지표(metrics)를 바탕으로 OpenAI Responses API를 호출해 개선사항(권고안)을 생성한다.
-
-    반환값은 (가능한 한) 아래 스키마를 따르는 dict 형태여야 한다:
-    {
-      "overview": str,                      # 요약(한국어)
-      "assumptions": [str],                 # 가정/전제(한국어)
-      "recommendations": [                  # 권고안 목록(한국어)
-         {"priority": int,                  # 우선순위(1이 가장 높음)
-          "title": str,                     # 제목
-          "why": str,                       # 근거/이유(가능하면 metrics 기반)
-          "action": str,                    # 실행 방안(구체적)
-          "validation": str,                # 검증 방법(지표/테스트 기준)
-          "confidence": "high|medium|low",  # 확신 수준
-          "is_speculative": bool}           # 추측 여부(근거 부족 시 True)
-      ],
-      "notes": str                          # 추가 메모(선택)
-    }
-
-    주의:
-    - 모든 문자열 값은 한국어로 작성한다(단위/약어: ms, p95 등은 예외).
-    - metrics에 근거가 부족한 내용은 반드시 추측으로 표시한다(is_speculative=True).
-    """
-    import os, json
+def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> str:
+    """Call OpenAI Responses API to generate recommendations from computed metrics."""
+    import os
     try:
         from openai import OpenAI
     except Exception as e:
         raise RuntimeError(f"openai 패키지 import 실패: {e}")
 
-    # --- API key
     api_key = None
+    # Streamlit secrets preferred
     if hasattr(st, "secrets"):
         api_key = st.secrets.get("OPENAI_API_KEY") or st.secrets.get("openai_api_key")
     api_key = api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY가 설정되어 있지 않습니다. (st.secrets 또는 환경변수)")
 
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    client = OpenAI(api_key=api_key)
 
-    # --- model & generation controls (fixed defaults; not user-configurable)
-    model = "gpt-4o-mini"
-    max_out = 700
-    temperature = 0.2
+    # Build compact prompt (Korean)
+    n_total = metrics.get("n_total")
+    low_th = metrics.get("ratio_low_th")
+    high_th = metrics.get("ratio_high_th")
+    low_rate = metrics.get("ratio_low_rate")
+    high_rate = metrics.get("ratio_high_rate")
 
-    # --- make metrics JSON-safe & compact
-    def _to_jsonable(x):
-        try:
-            import numpy as _np
-            import pandas as _pd
-        except Exception:
-            _np = None
-            _pd = None
+    err_missing_rate = metrics.get("err_missing_rate")
+    abs_p95 = metrics.get("abs_p95")
+    abs_p99 = metrics.get("abs_p99")
+    abs_tail_th = metrics.get("abs_tail_th")
+    proc_p95 = metrics.get("proc_p95")
+    proc_p99 = metrics.get("proc_p99")
+    proc_max = metrics.get("proc_max")
+    proc_tail_th = metrics.get("proc_tail_th")
 
-        if x is None:
-            return None
-        if _pd is not None and hasattr(_pd, "isna"):
-            try:
-                if _pd.isna(x):
-                    return None
-            except Exception:
-                pass
-        if _np is not None:
-            if isinstance(x, (_np.integer, _np.floating, _np.bool_)):
-                return x.item()
-        if isinstance(x, (int, float, bool, str)):
-            return x
-        if isinstance(x, dict):
-            return {str(k): _to_jsonable(v) for k, v in x.items()}
-        if isinstance(x, (list, tuple)):
-            return [_to_jsonable(v) for v in x]
-        return str(x)
+    tag_counts = metrics.get("candidate_tag_counts") or {}
+    tag_top = list(tag_counts.items())[:6]
 
-    safe_metrics = _to_jsonable(metrics)
-    payload = {
-        "pctl": int(pctl),
-        "metrics": safe_metrics,
-        "metric_key_hints": [
-            "ratio_p05","ratio_p50","ratio_p95","ratio_p99","low_rate","high_rate",
-            "abs_p95","abs_p99","err_missing_rate",
-            "proc_p95","proc_p99","proc_max",
-            "cand_top_tags"
-        ],
-    }
+    # Keep it short and evidence-led
+    prompt_lines = [
+        "아래는 차선 인식 자율주행 로그의 분포 요약입니다. 이 요약만을 근거로 개선사항을 제안하세요.",
+        "",
+        f"- 총 프레임 수: {n_total}",
+    ]
+    if low_th is not None:
+        prompt_lines += [
+            f"- Mask White Ratio 하한(하위 {100 - pctl}%): {low_th:.4f} / 해당 비율: {low_rate:.2f}%",
+            f"- Mask White Ratio 상한(상위 {100 - pctl}%): {high_th:.4f} / 해당 비율: {high_rate:.2f}%",
+        ]
+    if err_missing_rate is not None:
+        prompt_lines.append(f"- Lane Error 결측률: {err_missing_rate:.2f}%")
+    if abs_p95 is not None:
+        prompt_lines.append(f"- Abs Error p95/p99: {abs_p95:.2f}/{abs_p99:.2f} px, 상위 {100 - pctl}% 기준(임계): ≥ {abs_tail_th:.2f} px")
+    if proc_p95 is not None:
+        prompt_lines.append(f"- Processing Time p95/p99/max: {proc_p95:.1f}/{proc_p99:.1f}/{proc_max:.1f} ms, 상위 {100 - pctl}% 기준(임계): ≥ {proc_tail_th:.1f} ms")
+    if tag_top:
+        prompt_lines.append("- 후보 태그 상위:")
+        for k, v in tag_top:
+            prompt_lines.append(f"  - {k}: {v}건")
 
-    # --- structured output schema (strict)
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "overview": {"type": "string", "maxLength": 700},
-            "assumptions": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
-            "recommendations": {
-                "type": "array",
-                "minItems": 4,
-                "maxItems": 10,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "priority": {"type": "integer", "minimum": 1, "maximum": 10},
-                        "title": {"type": "string", "maxLength": 120},
-                        "why": {"type": "string", "maxLength": 400},
-                        "action": {"type": "string", "maxLength": 400},
-                        "validation": {"type": "string", "maxLength": 300},
-                        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-                        "is_speculative": {"type": "boolean"},
-                    },
-                    "required": ["priority", "title", "why", "action", "validation", "confidence", "is_speculative"],
-                },
-            },
-            "notes": {"type": "string", "maxLength": 500},
-        },
-        "required": ["overview", "assumptions", "recommendations", "notes"],
-    }
+    prompt_lines += [
+        "",
+        "요청:",
+        "1) 우선순위 높은 개선사항 6~10개를 bullet로 제시.",
+        "2) 각 항목은 (a) 무엇을 바꿀지, (b) 왜 필요한지(위 지표 중 어떤 근거), (c) 어떻게 검증할지(간단한 실험/모니터링) 3줄 이내로.",
+        "3) 근거가 부족하면 반드시 '추측'이라고 표시하고 단정하지 말 것.",
+        "4) 출력은 한국어. 불필요한 서론은 생략.",
+    ]
+    prompt = "\n".join(prompt_lines)
 
-    # --- prompt (short, metric-grounded)
-    system = (
-        "너는 자율주행(차선 인식) 로그의 '요약 통계'만 보고 개선안을 제안한다. "
-        "요약에 없는 사실은 만들지 말고, 확신이 없으면 is_speculative=true 및 confidence=low로 표기하라. "
-        "why에는 반드시 metric 키(예: abs_p95, err_missing_rate 등)나 cand_top_tags를 근거로 언급하라. "
-        "출력은 반드시 JSON 스키마를 따르라."
-    )
-    user = (
-        "아래 JSON은 Part X에서 계산한 요약 통계이다. "
-        "이 정보만 근거로 개선안을 작성하라.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
-    )
-
+    model = st.session_state.get("partx_openai_model") or "gpt-5.2"
     resp = client.responses.create(
         model=model,
         input=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "system", "content": "너는 자율주행(차선 인식) 로그 기반 개선 제안 작성 도우미다. 과장하지 말고, 근거-기반으로만 말하라."},
+            {"role": "user", "content": prompt},
         ],
-        text={"format": {"type": "json_schema", "name": "partx_recos", "strict": True, "schema": schema}},
-        max_output_tokens=max_out,
-        temperature=temperature,
-        store=False,
     )
-
-    raw = (getattr(resp, "output_text", None) or "").strip()
-    if not raw:
-        return {"overview": "", "assumptions": [], "recommendations": [], "notes": ""}
-
-    # --- best-effort parse
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-
-    # fallback: wrap raw text (still editable in report)
-    return {
-        "overview": "LLM 출력(JSON 파싱 실패). 아래 notes를 참고하세요.",
-        "assumptions": [],
-        "recommendations": [],
-        "notes": raw[:480],
-    }
+    return (getattr(resp, "output_text", None) or "").strip()
 
 
 
-
-
-def _format_llm_recos_markdown(llm: dict | None) -> str:
-    """Render LLM JSON result into compact Markdown (copy/edit friendly)."""
-    llm = llm or {}
-    overview = str(llm.get("overview") or "").strip()
-    assumptions = llm.get("assumptions") or []
-    recos = llm.get("recommendations") or []
-    notes = str(llm.get("notes") or "").strip()
-
-    lines: list[str] = []
-    if overview:
-        lines.append(overview)
-
-    if assumptions:
-        lines.append("")
-        lines.append("**가정/불확실(모델 표기)**")
-        for a in assumptions[:8]:
-            a = str(a).strip()
-            if a:
-                lines.append(f"- {a}")
-
-    if recos:
-        lines.append("")
-        lines.append("**개선사항(우선순위)**")
-        # sort by priority if possible
-        def _pri(x):
-            try:
-                return int(x.get("priority", 999))
-            except Exception:
-                return 999
-
-        for r in sorted(recos, key=_pri):
-            try:
-                pri = int(r.get("priority", 0))
-            except Exception:
-                pri = r.get("priority", "-")
-            title = str(r.get("title") or "").strip()
-            conf = str(r.get("confidence") or "").strip()
-            spec = bool(r.get("is_speculative", False))
-            tag = []
-            if conf:
-                tag.append(f"conf:{conf}")
-            if spec:
-                tag.append("추측")
-            tag_txt = f" ({', '.join(tag)})" if tag else ""
-
-            why = str(r.get("why") or "").strip()
-            action = str(r.get("action") or "").strip()
-            validation = str(r.get("validation") or "").strip()
-
-            head = f"- **P{pri}. {title}**{tag_txt}".strip()
-            lines.append(head)
-            if why:
-                lines.append(f"  - 근거: {why}")
-            if action:
-                lines.append(f"  - 조치: {action}")
-            if validation:
-                lines.append(f"  - 검증: {validation}")
-
-    if notes:
-        lines.append("")
-        lines.append(f"> 참고: {notes}")
-
-    return "\n".join(lines).strip()
-
-
-
-def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
+def _build_partx_report(metrics: dict, pctl: int, openai_text: str | None) -> str:
     """Build a copy/edit-friendly markdown report for Part X."""
-    llm_md = _format_llm_recos_markdown(llm)
+    openai_text = (openai_text or "").strip()
 
     n_total = metrics.get("n_total")
     ratio_low_th = metrics.get("ratio_low_th")
@@ -1396,9 +1240,9 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
     lines.append("")
 
     lines.append("## 3) 개선사항(자동 생성/수정 가능)")
-    if llm_md:
+    if openai_text:
         # OpenAI output is already markdown. Put it as-is.
-        lines.append(llm_md)
+        lines.append(openai_text)
     else:
         lines.append("- (아직 생성된 개선사항이 없습니다. Part X에서 버튼을 눌러 생성한 뒤, 여기서 문구를 수정하세요.)")
 
@@ -1414,6 +1258,8 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
     st.markdown("### 개선사항(OpenAI 자동 생성)")
     st.caption("버튼을 누르면 위 분포 요약을 근거로 개선사항을 생성합니다. (API 키는 secrets/환경변수에 설정)")
 
+    # model selector (simple text input)
+    st.text_input("모델", value=st.session_state.get("partx_openai_model", "gpt-5.2"), key="partx_openai_model")
 
     col_a, col_b = st.columns([1, 1])
     with col_a:
@@ -1422,18 +1268,16 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
         clear_btn = st.button("생성 결과 지우기")
 
     if clear_btn:
-        st.session_state.pop("partx_openai_json", None)
         st.session_state.pop("partx_openai_text", None)
         st.session_state.pop("partx_report_text", None)
 
     if run_btn:
         try:
             with st.spinner("OpenAI 호출 중..."):
-                llm = _openai_generate_recos_from_metrics(metrics, pctl=pctl)
-                md = _format_llm_recos_markdown(llm)
-            st.session_state["partx_openai_json"] = llm
-            st.session_state["partx_openai_text"] = md
-            st.session_state["partx_report_text"] = _build_partx_report(metrics, pctl=pctl, llm=llm)
+                txt = _openai_generate_recos_from_metrics(metrics, pctl=pctl)
+            st.session_state["partx_openai_text"] = txt
+            # Build a copy/edit-friendly report (do not overwrite unless re-generated)
+            st.session_state["partx_report_text"] = _build_partx_report(metrics, pctl=pctl, openai_text=txt)
         except Exception as e:
             st.error(str(e))
 
@@ -1449,7 +1293,7 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
     # Initialize report text once (preserve user edits across reruns)
     if "partx_report_text" not in st.session_state:
         st.session_state["partx_report_text"] = _build_partx_report(
-            metrics, pctl=pctl, llm=st.session_state.get("partx_openai_json")
+            metrics, pctl=pctl, openai_text=st.session_state.get("partx_openai_text")
         )
 
     st.text_area(

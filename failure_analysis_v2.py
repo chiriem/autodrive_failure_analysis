@@ -153,7 +153,7 @@ def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: i
 
 analysis_mode = st.sidebar.radio(
     "분석 모드",
-    ["파일 업로드 (기본)", "0109 고정 데이터 분석", "0112 고정 데이터 분석"],
+    ["파일 업로드 (기본)", "0109 고정 데이터 분석"],
     index=0
 )
 
@@ -163,12 +163,6 @@ if analysis_mode == "0109 고정 데이터 분석":
     # 0109 고정 데이터 분석은 별도 모듈(failure_analysis_0109.py)로 위임합니다.
     import failure_analysis_0109 as page_0109
     page_0109.render()
-    st.stop()
-
-if analysis_mode == "0112 고정 데이터 분석":
-    # 0112 고정 데이터 분석은 별도 모듈(failure_analysis_0112.py)로 위임합니다.
-    import failure_analysis_0112 as page_0112
-    page_0112.render()
     st.stop()
 
 else:
@@ -1068,27 +1062,18 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
 
 def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
     """
-    계산된 지표(metrics)를 바탕으로 OpenAI Responses API를 호출해 개선사항(권고안)을 생성한다.
+    Call OpenAI Responses API to generate recommendations from computed metrics.
 
-    반환값은 (가능한 한) 아래 스키마를 따르는 dict 형태여야 한다:
+    Returns a dict that conforms (best-effort) to the schema:
     {
-      "overview": str,                      # 요약(한국어)
-      "assumptions": [str],                 # 가정/전제(한국어)
-      "recommendations": [                  # 권고안 목록(한국어)
-         {"priority": int,                  # 우선순위(1이 가장 높음)
-          "title": str,                     # 제목
-          "why": str,                       # 근거/이유(가능하면 metrics 기반)
-          "action": str,                    # 실행 방안(구체적)
-          "validation": str,                # 검증 방법(지표/테스트 기준)
-          "confidence": "high|medium|low",  # 확신 수준
-          "is_speculative": bool}           # 추측 여부(근거 부족 시 True)
+      "overview": str,
+      "assumptions": [str],
+      "recommendations": [
+         {"priority": int, "title": str, "why": str, "action": str,
+          "validation": str, "confidence": "high|medium|low", "is_speculative": bool}
       ],
-      "notes": str                          # 추가 메모(선택)
+      "notes": str (optional)
     }
-
-    주의:
-    - 모든 문자열 값은 한국어로 작성한다(단위/약어: ms, p95 등은 예외).
-    - metrics에 근거가 부족한 내용은 반드시 추측으로 표시한다(is_speculative=True).
     """
     import os, json
     try:
@@ -1104,12 +1089,12 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY가 설정되어 있지 않습니다. (st.secrets 또는 환경변수)")
 
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    client = OpenAI(api_key=api_key)
 
-    # --- model & generation controls (fixed defaults; not user-configurable)
-    model = "gpt-4o-mini"
-    max_out = 700
-    temperature = 0.2
+    # --- model & generation controls (keep small/cheap by default)
+    model = st.session_state.get("partx_openai_model") or "gpt-4o-mini"
+    max_out = int(st.session_state.get("partx_openai_max_out") or 700)
+    temperature = float(st.session_state.get("partx_openai_temp") or 0.2)
 
     # --- make metrics JSON-safe & compact
     def _to_jsonable(x):
@@ -1179,7 +1164,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
             },
             "notes": {"type": "string", "maxLength": 500},
         },
-        "required": ["overview", "assumptions", "recommendations", "notes"],
+        "required": ["overview", "assumptions", "recommendations"],
     }
 
     # --- prompt (short, metric-grounded)
@@ -1201,7 +1186,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        text={"format": {"type": "json_schema", "name": "partx_recos", "strict": True, "schema": schema}},
+        text={"format": {"type": "json_schema", "strict": True, "schema": schema}},
         max_output_tokens=max_out,
         temperature=temperature,
         store=False,
@@ -1414,6 +1399,10 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
     st.markdown("### 개선사항(OpenAI 자동 생성)")
     st.caption("버튼을 누르면 위 분포 요약을 근거로 개선사항을 생성합니다. (API 키는 secrets/환경변수에 설정)")
 
+    with st.expander("LLM 설정", expanded=False):
+        st.text_input("모델", value=st.session_state.get("partx_openai_model", "gpt-4o-mini"), key="partx_openai_model")
+        st.number_input("최대 출력 토큰", min_value=200, max_value=2000, value=int(st.session_state.get("partx_openai_max_out", 700)), step=50, key="partx_openai_max_out")
+        st.slider("temperature", min_value=0.0, max_value=1.0, value=float(st.session_state.get("partx_openai_temp", 0.2)), step=0.1, key="partx_openai_temp")
 
     col_a, col_b = st.columns([1, 1])
     with col_a:
