@@ -5,148 +5,16 @@ import numpy as np
 from pathlib import Path
 import re
 
+from fa_utils import (
+    TS_COL, QUALITY_COL, MASK_RATIO_COL, ERROR_COL, ABS_ERROR_COL,
+    PROC_COL, WEATHER_COL, TOD_COL, MODE_COL,
+    FIXED_LOG_COLS,
+    RUN_ID_COL, ROW_IN_RUN_COL, EVENT_ID_COL,
+    _select_fixed_columns, _ensure_fields, _make_tooltip, _add_event_ids_per_run, _describe_missing,
+    perform_linear_regression, draw_histogram,
+)
+
 st.set_page_config(page_title="실패분석", page_icon="🛣️", layout="wide")
-
-# =============================================================================
-# Canonical columns (you can rename your CSV columns to match, or rely on auto-rename)
-
-TS_COL = "Timestamp"                   # optional (ms or ISO string)
-
-QUALITY_COL = "Lane Quality Score"     # 0~100 (higher is better)  [OPTIONAL] (현재 logger 구현에서는 ratio의 스케일링일 수 있음)
-MASK_RATIO_COL = "Mask White Ratio"    # 0~1 (white pixels / mask pixels) [REQUIRED]
-
-ERROR_COL = "Lane Error"               # signed (e.g., pixels)
-ABS_ERROR_COL = "Abs Lane Error"
-
-PROC_COL = "Processing Time (ms)"      # optional
-WEATHER_COL = "Weather"                # optional
-TOD_COL = "Time of Day"                # optional
-MODE_COL = "Mode"                    # optional (e.g., auto/manual)
-
-
-
-# Fixed schema (업로드 로그는 아래 8개 컬럼명을 '그대로' 사용한다고 가정)
-FIXED_LOG_COLS = [
-    TS_COL,
-    WEATHER_COL,
-    TOD_COL,
-    MASK_RATIO_COL,
-    QUALITY_COL,
-    ERROR_COL,
-    PROC_COL,
-    MODE_COL,
-]
-
-def _select_fixed_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Select fixed columns in a stable order and fail fast if any are missing."""
-    missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
-    if missing:
-        raise ValueError(f"필수 컬럼 누락: {', '.join(missing)}")
-    return df[FIXED_LOG_COLS].copy()
-
-# Synthetic IDs (created at load/merge time)
-RUN_ID_COL = "Run ID"
-ROW_IN_RUN_COL = "Row In Run"
-EVENT_ID_COL = "Event ID"
-
-# =============================================================================
-# Helpers
-
-def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
-    if QUALITY_COL in df.columns:
-        q = pd.to_numeric(df[QUALITY_COL], errors="coerce") # 수치형 데이터로 변환, 불가능 시 NaN 값 반환
-        df[QUALITY_COL] = q.clip(0, 100)
-
-    if MASK_RATIO_COL in df.columns:
-        r = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce")
-        df[MASK_RATIO_COL] = np.where(r > 1.5, r / 100.0, r)
-        df[MASK_RATIO_COL] = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce").clip(0, 1)
-
-    if ERROR_COL in df.columns and ABS_ERROR_COL not in df.columns:
-        e = pd.to_numeric(df[ERROR_COL], errors="coerce")
-        df[ABS_ERROR_COL] = e.abs()
-
-    # Optional defaults
-    if WEATHER_COL not in df.columns:
-        df[WEATHER_COL] = "Unknown"
-    if TOD_COL not in df.columns:
-        df[TOD_COL] = "Unknown"
-
-    return df
-
-
-def _make_tooltip(df: pd.DataFrame, wanted: list[str]) -> list[str]:
-    """Return tooltip columns that actually exist in df (keeps order)."""
-    return [c for c in wanted if c in df.columns]
-
-
-def _add_event_ids_per_run(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
-    d = df.copy()
-    d[RUN_ID_COL] = run_id
-    d[ROW_IN_RUN_COL] = np.arange(len(d), dtype=int)
-    d[EVENT_ID_COL] = d[RUN_ID_COL].astype(str) + "_" + d[ROW_IN_RUN_COL].astype(str).str.zfill(6)
-    return d
-
-
-def _describe_missing(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    rows = []
-    for c in cols:
-        if c not in df.columns:
-            rows.append({"column": c, "present": False, "missing_rate": 1.0, "dtype": "N/A"})
-        else:
-            miss = df[c].isnull().mean()
-            rows.append({"column": c, "present": True, "missing_rate": float(miss), "dtype": str(df[c].dtype)})
-    
-    res = pd.DataFrame(rows)
-    if not res.empty:
-        res["missing_%"] = (res["missing_rate"] * 100).round(2)
-        res = res.drop(columns=["missing_rate"])
-    return res
-
-
-def perform_linear_regression(df: pd.DataFrame, x_col: str, y_col: str, sigma_threshold: float) -> pd.DataFrame:
-    clean_df = df.dropna(subset=[x_col, y_col]).copy()
-    if clean_df.empty:
-        clean_df["Status"] = "In Range"
-        return clean_df
-
-    x = clean_df[x_col].to_numpy()
-    y = clean_df[y_col].to_numpy()
-
-    slope, intercept = np.polyfit(x, y, 1)
-    predictions = (slope * x) + intercept
-    residuals = y - predictions
-    std_dev = float(np.std(residuals)) if len(residuals) else 0.0
-
-    upper_bound = predictions + (sigma_threshold * std_dev)
-    lower_bound = predictions - (sigma_threshold * std_dev)
-
-    clean_df["Predicted"] = predictions
-    clean_df["Upper Bound"] = upper_bound
-    clean_df["Lower Bound"] = lower_bound
-    clean_df["Status"] = np.where(
-        (clean_df[y_col] > upper_bound) | (clean_df[y_col] < lower_bound),
-        "Outlier",
-        "In Range"
-    )
-    return clean_df
-
-
-def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: int = 220):
-    clean_df = df.dropna(subset=[metric_name])
-    if clean_df.empty:
-        st.info(f"No data for {metric_name}")
-        return
-    st.altair_chart(
-        alt.Chart(clean_df, height=height)
-        .mark_bar(binSpacing=0)
-        .encode(
-            alt.X(metric_name, type="quantitative").bin(maxbins=bins),
-            alt.Y("count()").axis(None),
-        ),
-        use_container_width=True,
-    )
-
 
 # =============================================================================
 # UI
@@ -362,7 +230,8 @@ else:
                 .mark_bar(opacity=0.65)
                 .encode(
                     x=alt.X(f"{MASK_RATIO_COL}:Q", bin=alt.Bin(maxbins=40), title="Mask White Ratio"),
-                    y=alt.Y("count()", title="Frames"),
+                    y=alt.Y("count()", title="Frames", stack= None),
+                    xOffset=alt.XOffset("Error Recorded:N", sort=["Present", "Missing"]),
                     color=alt.Color("Error Recorded:N"),
                     tooltip=[
                         alt.Tooltip("Error Recorded:N"),
