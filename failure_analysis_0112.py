@@ -29,6 +29,108 @@ def _load_fixed_data_0109_baseline() -> pd.DataFrame:
     base_dir = Path(__file__).resolve().parent
     return try_load_fixed_csv(_BASELINE_FILENAME, run_id="run_0109_baseline", base_dir=base_dir)
 
+
+# =============================================================================
+# Timestamp 기반 이상치(후보) 구간 시각화 (x축은 Timestamp 숫자 그대로 사용)
+
+def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=None) -> None:
+    """Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를
+    Timestamp 구간으로 집계하여 '이상치(후보) 밀도'를 시각화합니다.
+
+    - x축: Timestamp(숫자 그대로)
+    - y축: 구간별 outlier count(개수)
+    """
+    if TS_COL not in df_flags.columns:
+        st.info("Timestamp 컬럼이 없어 시간축 기반 구간 시각화를 생략합니다.")
+        return
+
+    ts_num = pd.to_numeric(df_flags[TS_COL], errors="coerce")
+    if ts_num.notna().sum() == 0:
+        st.info("Timestamp 값이 전부 결측이라 시간축 기반 구간 시각화를 생략합니다.")
+        return
+
+    dfv = df_flags.copy()
+    dfv[TS_COL] = ts_num
+
+    x_col = TS_COL
+    x_type = "Q"
+    x_title = "Timestamp"
+
+    def _agg_timeline(flag_series: pd.Series):
+        tmp = pd.DataFrame({
+            "ts": pd.to_numeric(dfv[x_col], errors="coerce"),
+            "is_out": flag_series.fillna(False).astype(bool),
+        }).dropna(subset=["ts"])
+        if tmp.empty:
+            return pd.DataFrame(), ""
+
+        n_bins = int(min(250, max(80, round(tmp.shape[0] / 30))))
+        try:
+            tmp["_bin"] = pd.cut(tmp["ts"], bins=n_bins)
+        except Exception:
+            # timestamp 값이 거의 상수/비정상일 때의 fallback
+            tmp["_bin"] = pd.cut(np.arange(len(tmp)), bins=n_bins)
+
+        g = (
+            tmp.groupby("_bin", observed=True)
+            .agg(ts_mid=("ts", "mean"), frames=("is_out", "size"), outliers=("is_out", "sum"))
+            .reset_index(drop=True)
+        )
+        g = g.rename(columns={"ts_mid": "ts"})
+        g["outlier_rate"] = (g["outliers"] / g["frames"] * 100.0).replace([np.inf, -np.inf], np.nan).round(2)
+        return g, f"{n_bins} bins"
+
+    def _plot_one(flag_cols_needed: list[str], flag_expr, metric_title: str) -> None:
+        for c in flag_cols_needed:
+            if c not in dfv.columns:
+                st.info(f"{metric_title}: 필요한 플래그({c})가 없어 시각화를 생략합니다.")
+                return
+
+        flag = flag_expr(dfv)
+        g, freq_txt = _agg_timeline(flag)
+        if g.empty:
+            st.info(f"{metric_title}: 유효한 timestamp 구간이 없어 시각화를 생략합니다.")
+            return
+
+        base = alt.Chart(g)
+        chart = base.mark_line(point=True).encode(
+            x=alt.X(f"ts:{x_type}", title=x_title),
+            y=alt.Y("outliers:Q", title="Outliers (count)", scale=alt.Scale(zero=True)),
+            tooltip=[
+                alt.Tooltip(f"ts:{x_type}", title="timestamp"),
+                alt.Tooltip("frames:Q", title="frames"),
+                alt.Tooltip("outliers:Q", title="outliers"),
+            ],
+        ).properties(height=210, title=metric_title)
+
+        st.altair_chart(chart, use_container_width=True)
+
+        top5 = g.sort_values(["outliers", "frames"], ascending=False).head(5).copy()
+        top5["구간"] = top5["ts"].astype(str)
+
+        with st.expander(f"{metric_title} 이상치(후보) 구간 Top 5", expanded=False):
+            cap = f"집계 단위: {freq_txt}"
+            if pctl is not None:
+                cap += f" / 민감도(pctl): {pctl}"
+            st.caption(cap)
+            st.dataframe(top5[["구간", "frames", "outliers"]], hide_index=True, use_container_width=True)
+
+    _plot_one(
+        ["mask_low", "mask_high"],
+        lambda d: d["mask_low"].astype(bool) | d["mask_high"].astype(bool),
+        "Mask White Ratio 이상치(하위/상위 꼬리) 개수",
+    )
+    _plot_one(
+        ["err_high"],
+        lambda d: d["err_high"].astype(bool),
+        "Abs Lane Error 이상치(상위 꼬리) 개수",
+    )
+    _plot_one(
+        ["proc_high"],
+        lambda d: d["proc_high"].astype(bool),
+        "Processing Time 이상치(상위 꼬리) 개수",
+    )
+
 def render() -> None:
     _maybe_set_page_config()
     # UI
@@ -601,6 +703,22 @@ def render() -> None:
     show = [c for c in show if c in top.columns]
     st.dataframe(top[show], column_config=_column_config_for(show), height=360)
 
+    # =============================================================================
+    # Part IV-1: Timestamp 기반 이상치(후보) 구간 보기 (Part III 플래그 재사용)
+
+    st.divider()
+    st.markdown("## Part IV-1: Timestamp 기반 이상치(후보) 구간 보기")
+    st.caption("Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를 Timestamp 구간으로 집계합니다. (KST 변환 없음)")
+
+    if TS_COL not in d.columns:
+        st.info("Timestamp 컬럼이 없어 시간축 기반 구간 시각화를 생략합니다.")
+    else:
+        need_any = any(c in d.columns for c in ["mask_low", "mask_high", "err_high", "proc_high"])
+        if not need_any:
+            st.info("후보 플래그 컬럼이 없어(Part III 후보 탐지 불가) 시간축 기반 구간 시각화를 생략합니다.")
+        else:
+            _render_timestamp_outlier_windows_from_flags(d, pctl=pctl)
+
     st.divider()
     st.markdown("## Part V: 전체 로그 보기")
     st.dataframe(df.drop(["Run ID", "Row In Run", "Event ID"], axis=1))
@@ -915,12 +1033,6 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
                 .properties(height=120, title="Mask Ratio 분포 비교(0112 vs 0109)"),
                 use_container_width=True,
             )
-        with col_info:
-            st.markdown("**요약(비교 기준)**")
-            st.write(f"- x축 상한: 0 ~ {x_max:.2f}")
-            st.write(f"- q99.5: 0112={q_0112_str}, 0109={q_0109_str}")
-            if n_clip_0112 or n_clip_0109:
-                st.write(f"- > {MASK_RATIO_PLOT_MAX:.2f} 제외: 0112 {n_clip_0112} / 0109 {n_clip_0109}")
     else:
         st.info("0109 비교용 데이터가 없어, 변화(비교) 시각화는 생략됩니다.")
 
