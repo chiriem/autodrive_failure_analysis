@@ -161,37 +161,27 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
     x_title = "Timestamp"
 
     def _agg_timeline(flag_series: pd.Series):
-        # 공통: timestamp 결측 제거
-        tmp = pd.DataFrame({"ts": dfv[x_col], "is_out": flag_series.fillna(False).astype(bool)})
-        tmp = tmp.dropna(subset=["ts"])
+        tmp = pd.DataFrame({
+            "ts": dfv[x_col],
+            "is_out": flag_series.fillna(False).astype(bool),
+        }).dropna(subset=["ts"])
+
         if tmp.empty:
             return pd.DataFrame(), ""
 
-        if x_type == "T":
-            tmp = tmp.sort_values("ts")
-            freq = _auto_freq(tmp["ts"])
-            g = (
-                tmp.groupby(pd.Grouper(key="ts", freq=freq))
-                .agg(frames=("is_out", "size"), outliers=("is_out", "sum"))
-                .reset_index()
-                .dropna(subset=["ts"])
-            )
-            g["outlier_rate"] = (g["outliers"] / g["frames"] * 100.0).round(2)
-            g["end_ts"] = g["ts"] + pd.Timedelta(freq)
-            return g, freq
-        else:
-            # 숫자 timestamp: 고정 bin 개수로 구간화
-            n_bins = int(min(250, max(80, round(tmp.shape[0] / 30))))
-            tmp["_bin"] = pd.cut(tmp["ts"], bins=n_bins)
-            g = (
-                tmp.groupby("_bin", observed=True)
-                .agg(ts_mid=("ts", "mean"), frames=("is_out", "size"), outliers=("is_out", "sum"))
-                .reset_index(drop=True)
-            )
-            g = g.rename(columns={"ts_mid": "ts"})
-            g["outlier_rate"] = (g["outliers"] / g["frames"] * 100.0).round(2)
-            g["end_ts"] = np.nan
-            return g, f"{n_bins} bins"
+        # 숫자 timestamp: 고정 bin 개수로 구간화
+        n_bins = int(min(250, max(80, round(tmp.shape[0] / 30))))
+        tmp["_bin"] = pd.cut(tmp["ts"], bins=n_bins)
+
+        g = (
+            tmp.groupby("_bin", observed=True)
+            .agg(ts_mid=("ts", "mean"), frames=("is_out", "size"), outliers=("is_out", "sum"))
+            .reset_index(drop=True)
+            .rename(columns={"ts_mid": "ts"})
+            .sort_values("ts")
+        )
+
+        return g, f"bins={n_bins}"
 
     def _plot_one(flag_col_needed, flag_expr, metric_title: str) -> None:
         # flag_expr: dfv -> boolean Series

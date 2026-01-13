@@ -26,11 +26,11 @@ def _load_fixed_data() -> pd.DataFrame:
 # Timestamp 기반 이상치(후보) 구간 시각화 (x축은 Timestamp 숫자 그대로 사용)
 
 def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=None) -> None:
+
     ts_num = pd.to_numeric(df_flags[TS_COL], errors="coerce")
 
     dfv = df_flags.copy()
     dfv[TS_COL] = ts_num
-
     x_col = TS_COL
     x_type = "Q"
     x_title = "Timestamp"
