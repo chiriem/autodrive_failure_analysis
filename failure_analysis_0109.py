@@ -831,7 +831,7 @@ def render() -> None:
 
 def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = None) -> None:
     st.divider()
-    st.markdown("## Part X: 분석에 기반한 자율주행 개선사항")
+    st.markdown("## Part X: 자율주행 개선사항 (분석 기반)")
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -938,9 +938,7 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
     if ERROR_COL in df.columns:
         err_missing_rate = float(_to_num(df[ERROR_COL]).isna().mean() * 100.0)
 
-
     # -------------------------------------------------------------------------
-    # 0) Insight summary + prioritized actions (auto)
     st.markdown("### 요약")
 
     _ratio = _to_num(df.get(MASK_RATIO_COL)).clip(0, 1)

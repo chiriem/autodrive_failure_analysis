@@ -712,12 +712,9 @@ def render() -> None:
     show = [c for c in show if c in top.columns]
     st.dataframe(top[show], column_config=_column_config_for(show), height=360)
 
-    # =============================================================================
-    # Part V: Timestamp 기반 이상치(후보) 구간 보기 (Part III 플래그 재사용)
-
     st.divider()
     st.markdown("## Part V: Timestamp 기반 이상치 구간 보기")
-    st.caption("Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를 Timestamp 구간으로 집계합니다. (KST 변환 없음)")
+    st.caption("Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를 Timestamp 구간으로 집계합니다.")
 
     if TS_COL not in d.columns:
         st.info("Timestamp 컬럼이 없어 시간축 기반 구간 시각화를 생략합니다.")
@@ -873,11 +870,12 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
         st.warning(f"0109 비교 로드/계산 중 오류로 비교를 생략합니다: {e}")
 
     # -------------------------------------------------------------------------
-
+    # 0) Insight summary + prioritized actions (auto)
     st.markdown("### 요약")
 
     n_total = int(cur.get("n_total") or len(df))
 
+    # Recompute boolean flags for overlaps (safe)
     _ratio = _to_num(df.get(MASK_RATIO_COL)).clip(0, 1)
     _abs = _to_num(df.get(ABS_ERROR_COL))
     _proc = _to_num(df.get(PROC_COL))
