@@ -54,31 +54,131 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
 
     x_col = TS_COL
     x_type = "Q"
-    x_title = "Timestamp"
+    x_title = "Timestamp (큰 공백 압축)"
+
 
     def _agg_timeline(flag_series: pd.Series):
+
+        """Timestamp 큰 공백(gap)을 자동 감지해 압축(ts_plot)한 뒤, ts_plot 기준으로 bin 집계한다.
+
+        - gap 기준(하드코딩): gap > median_step * 50
+
+        - gap을 화면에 남기는 길이: keep = median_step * 3
+
+        """
+
         tmp = pd.DataFrame({
+
             "ts": pd.to_numeric(dfv[x_col], errors="coerce"),
+
             "is_out": flag_series.fillna(False).astype(bool),
+
         }).dropna(subset=["ts"])
+
         if tmp.empty:
+
             return pd.DataFrame(), ""
 
+
+        # 정렬 후 diff로 큰 gap 감지
+
+        tmp = tmp.sort_values("ts").reset_index(drop=True)
+
+        d = tmp["ts"].diff()
+
+        d_pos = d[(d > 0) & d.notna()]
+
+        if d_pos.empty:
+
+            step = 1.0
+
+        else:
+
+            step = float(d_pos.median())
+
+
+        gap_th = step * 50.0
+
+        keep = step * 3.0
+
+
+        tmp["_gap"] = d
+
+        tmp["_excess"] = np.where((tmp["_gap"] > gap_th) & tmp["_gap"].notna(), tmp["_gap"] - keep, 0.0)
+
+        tmp["_shift"] = tmp["_excess"].cumsum().fillna(0.0)
+
+        tmp["ts_plot"] = tmp["ts"].astype(float) - tmp["_shift"]
+
+
+        # gap 요약(필요시 화면/디버깅용)
+
+        gaps = tmp.loc[tmp["_excess"] > 0, ["ts", "_gap", "_excess"]].copy()
+
+        if not gaps.empty:
+
+            gaps.insert(0, "ts_prev", tmp["ts"].shift(1).loc[gaps.index].values)
+
+            gaps = gaps.rename(columns={"ts": "ts_next", "_gap": "gap", "_excess": "compressed_by"})
+
+        else:
+
+            gaps = pd.DataFrame(columns=["ts_prev", "ts_next", "gap", "compressed_by"])
+
+
+        # ts_plot 기준으로 binning (큰 공백이 줄어들어 빈 bin이 크게 감소)
+
         n_bins = int(min(250, max(80, round(tmp.shape[0] / 30))))
+
         try:
-            tmp["_bin"] = pd.cut(tmp["ts"], bins=n_bins)
+
+            tmp["_bin"] = pd.cut(tmp["ts_plot"], bins=n_bins)
+
         except Exception:
-            # timestamp 값이 거의 상수/비정상일 때의 fallback
+
             tmp["_bin"] = pd.cut(np.arange(len(tmp)), bins=n_bins)
 
+
         g = (
+
             tmp.groupby("_bin", observed=True)
-            .agg(ts_mid=("ts", "mean"), frames=("is_out", "size"), outliers=("is_out", "sum"))
+
+            .agg(
+
+                ts_plot_mid=("ts_plot", "mean"),
+
+                ts_min=("ts", "min"),
+
+                ts_max=("ts", "max"),
+
+                frames=("is_out", "size"),
+
+                outliers=("is_out", "sum"),
+
+            )
+
             .reset_index(drop=True)
+
         )
-        g = g.rename(columns={"ts_mid": "ts"})
+
+        g = g.sort_values("ts_plot_mid")
+
+        # 기존 차트 코드를 최소 수정하기 위해 x축용 컬럼명을 ts로 맞춤(= 압축 좌표)
+
+        g["ts"] = g["ts_plot_mid"]
+
         g["outlier_rate"] = (g["outliers"] / g["frames"] * 100.0).replace([np.inf, -np.inf], np.nan).round(2)
-        return g, f"{n_bins} bins"
+
+
+        gap_cnt = int((tmp["_excess"] > 0).sum())
+
+        freq_txt = f"{n_bins} bins / gap-skip={gap_cnt}"
+
+        # gaps를 함수 밖에서 보고 싶으면 반환값에 포함시키는 대신, 전역/클로저 변수로 보관
+
+        return g, freq_txt, gaps
+
+
 
     def _plot_one(flag_cols_needed: list[str], flag_expr, metric_title: str) -> None:
         for c in flag_cols_needed:
@@ -87,17 +187,19 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
                 return
 
         flag = flag_expr(dfv)
-        g, freq_txt = _agg_timeline(flag)
+        g, freq_txt, gaps = _agg_timeline(flag)
         if g.empty:
             st.info(f"{metric_title}: 유효한 timestamp 구간이 없어 시각화를 생략합니다.")
             return
 
         base = alt.Chart(g)
         chart = base.mark_line(point=True).encode(
-            x=alt.X(f"ts:{x_type}", title=x_title),
+            x=alt.X(f"ts:{x_type}", title=x_title, axis=alt.Axis(labels=False)),
             y=alt.Y("outliers:Q", title="Outliers (count)", scale=alt.Scale(zero=True)),
             tooltip=[
-                alt.Tooltip(f"ts:{x_type}", title="timestamp"),
+                alt.Tooltip('ts_min:Q', title='orig ts start'),
+                alt.Tooltip('ts_max:Q', title='orig ts end'),
+                alt.Tooltip('ts:Q', title='plot ts'),
                 alt.Tooltip("frames:Q", title="frames"),
                 alt.Tooltip("outliers:Q", title="outliers"),
             ],
@@ -105,8 +207,14 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
 
         st.altair_chart(chart, use_container_width=True)
 
+        if gaps is not None and (not gaps.empty):
+            with st.expander(f"{metric_title} 큰 Timestamp 공백(gap) Top 10", expanded=False):
+                gg = gaps.sort_values(["gap"], ascending=False).head(10).copy()
+                st.caption("연속 timestamp 축에서 화면을 과도하게 늘리는 큰 공백을 자동 감지해, 차트에서는 해당 공백을 압축했습니다.")
+                st.dataframe(gg, hide_index=True, use_container_width=True)
+
         top5 = g.sort_values(["outliers", "frames"], ascending=False).head(5).copy()
-        top5["구간"] = top5["ts"].astype(str)
+        top5["구간"] = top5["ts_min"].astype(str) + " ~ " + top5["ts_max"].astype(str)
 
         with st.expander(f"{metric_title} 이상치(후보) 구간 Top 5", expanded=False):
             cap = f"집계 단위: {freq_txt}"
@@ -704,10 +812,10 @@ def render() -> None:
     st.dataframe(top[show], column_config=_column_config_for(show), height=360)
 
     # =============================================================================
-    # Part IV-1: Timestamp 기반 이상치(후보) 구간 보기 (Part III 플래그 재사용)
+    # Part V: Timestamp 기반 이상치(후보) 구간 보기 (Part III 플래그 재사용)
 
     st.divider()
-    st.markdown("## Part IV-1: Timestamp 기반 이상치(후보) 구간 보기")
+    st.markdown("## Part V: Timestamp 기반 이상치 구간 보기")
     st.caption("Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를 Timestamp 구간으로 집계합니다. (KST 변환 없음)")
 
     if TS_COL not in d.columns:
@@ -720,7 +828,7 @@ def render() -> None:
             _render_timestamp_outlier_windows_from_flags(d, pctl=pctl)
 
     st.divider()
-    st.markdown("## Part V: 전체 로그 보기")
+    st.markdown("## Part VI: 전체 로그 보기")
     st.dataframe(df.drop(["Run ID", "Row In Run", "Event ID"], axis=1))
 
     _render_part_x(df=df, pctl=pctl, cand=cand)
@@ -862,6 +970,98 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
             base = _metrics(base_df)
     except Exception as e:
         st.warning(f"0112 비교 로드/계산 중 오류로 비교를 생략합니다: {e}")
+
+    # -------------------------------------------------------------------------
+    st.markdown("### 요약")
+    n_total = int(cur.get("n_total") or len(df))
+
+    _ratio = _to_num(df.get(MASK_RATIO_COL)).clip(0, 1)
+    _abs = _to_num(df.get(ABS_ERROR_COL))
+    _proc = _to_num(df.get(PROC_COL))
+
+    low_th = cur.get("low_th")
+    high_th = cur.get("high_th")
+    abs_tail_th = cur.get("abs_tail_th")
+    proc_tail_th = cur.get("proc_tail_th")
+
+    _mask_low = (_ratio.le(low_th)) if (low_th is not None) else pd.Series(False, index=df.index)
+    _mask_high = (_ratio.ge(high_th)) if (high_th is not None) else pd.Series(False, index=df.index)
+    _mask_ext = _mask_low | _mask_high
+    _abs_high = (_abs.ge(abs_tail_th)) if (abs_tail_th is not None) else pd.Series(False, index=df.index)
+    _proc_high = (_proc.ge(proc_tail_th)) if (proc_tail_th is not None) else pd.Series(False, index=df.index)
+
+    _err_missing = pd.Series(False, index=df.index)
+    if ERROR_COL in df.columns:
+        _err_missing = _to_num(df[ERROR_COL]).isna()
+
+    def _cnt(mask: pd.Series) -> int:
+        try:
+            return int(mask.fillna(False).sum())
+        except Exception:
+            return 0
+
+    def _pct(cnt: int) -> float:
+        return round((cnt / n_total) * 100.0, 2) if n_total > 0 else 0.0
+
+    facts = [
+        {"항목": "Lane Error 결측", "프레임수": _cnt(_err_missing), "비율(%)": _pct(_cnt(_err_missing)), "기준/메모": "ERROR_COL 결측"},
+        {"항목": f"Mask Ratio 하위 꼬리(≤ {low_th:.4f})" if low_th is not None else "Mask Ratio 하위 꼬리", "프레임수": _cnt(_mask_low), "비율(%)": _pct(_cnt(_mask_low)), "기준/메모": f"하위 {100-pctl}% 분위"},
+        {"항목": f"Mask Ratio 상위 꼬리(≥ {high_th:.4f})" if high_th is not None else "Mask Ratio 상위 꼬리", "프레임수": _cnt(_mask_high), "비율(%)": _pct(_cnt(_mask_high)), "기준/메모": f"상위 {pctl}% 분위"},
+        {"항목": f"Abs Lane Error 상위 꼬리(≥ {abs_tail_th:.4f})" if abs_tail_th is not None else "Abs Lane Error 상위 꼬리", "프레임수": _cnt(_abs_high), "비율(%)": _pct(_cnt(_abs_high)), "기준/메모": f"상위 {pctl}% 분위"},
+        {"항목": f"Processing Time 상위 꼬리(≥ {proc_tail_th:.2f} ms)" if proc_tail_th is not None else "Processing Time 상위 꼬리", "프레임수": _cnt(_proc_high), "비율(%)": _pct(_cnt(_proc_high)), "기준/메모": f"상위 {pctl}% 분위"},
+        {"항목": "Mask 극단 & Abs Error 꼬리(교집합)", "프레임수": _cnt(_mask_ext & _abs_high), "비율(%)": _pct(_cnt(_mask_ext & _abs_high)), "기준/메모": "동시 발생"},
+        {"항목": "Abs Error 꼬리 & Proc 꼬리(교집합)", "프레임수": _cnt(_abs_high & _proc_high), "비율(%)": _pct(_cnt(_abs_high & _proc_high)), "기준/메모": "동시 발생"},
+        {"항목": "Mask 극단 & Abs Error & Proc(3중 교집합)", "프레임수": _cnt(_mask_ext & _abs_high & _proc_high), "비율(%)": _pct(_cnt(_mask_ext & _abs_high & _proc_high)), "기준/메모": "동시 발생"},
+    ]
+    st.dataframe(pd.DataFrame(facts), use_container_width=True)
+
+    # Optional: baseline delta (if available)
+    if base:
+        def _delta(a, b):
+            if a is None or b is None:
+                return None
+            try:
+                return float(a) - float(b)
+            except Exception:
+                return None
+
+        delta_rows = []
+        for key, label in [
+            ("low_rate", "Mask 하위 꼬리 비율(%)"),
+            ("high_rate", "Mask 상위 꼬리 비율(%)"),
+            ("abs_tail_rate", "Abs Error 꼬리 비율(%)"),
+            ("proc_tail_rate", "Proc 꼬리 비율(%)"),
+            ("err_missing_rate", "Lane Error 결측 비율(%)"),
+        ]:
+            dv = _delta(cur.get(key), base.get(key))
+            if dv is None:
+                continue
+            delta_rows.append({"항목": label, "변화(현재-기준, %p)": round(dv, 2)})
+
+        if delta_rows:
+            st.markdown("#### 기준일 대비 변화(현재-기준)")
+            st.dataframe(pd.DataFrame(delta_rows), use_container_width=True)
+
+    # Prioritized actions (speculative)
+    st.markdown("### 다음 액션 (권장, 추측)")
+    issues = [
+        {"_score": _cnt(_err_missing), "신호": "Lane Error 결측", "권장 액션(추측)": "로그/파이프라인에서 Lane Error 기록 경로 점검(컬럼 생성, 타입 변환, 저장 시점)", "검증": "결측 구간의 원본 로그/코드 경로 확인"},
+        {"_score": _cnt(_mask_low), "신호": "Mask Ratio 하위 꼬리", "권장 액션(추측)": "저가시성(역광/야간/오염) 프레임 표본 확인 → 전처리(감마/대비) 또는 데이터 보강", "검증": "하위 꼬리 프레임 20~50개 샘플링 확인"},
+        {"_score": _cnt(_mask_high), "신호": "Mask Ratio 상위 꼬리", "권장 액션(추측)": "과검출(반사/표지/노이즈) 여부 확인 → 후처리(연결성/폭 제약) 또는 필터 강화", "검증": "상위 꼬리 프레임 표본 확인"},
+        {"_score": _cnt(_abs_high), "신호": "Abs Lane Error 상위 꼬리", "권장 액션(추측)": "오차 큰 구간의 환경/모드/날씨 교차 확인 → 실패 조건 라벨링 및 재현 테스트", "검증": "tail 구간의 Weather/Time of Day 분포 비교"},
+        {"_score": _cnt(_proc_high), "신호": "Processing Time 상위 꼬리", "권장 액션(추측)": "지연 구간에서 모델/전처리 병목 확인 → 프로파일링 후 캐시/리사이즈/배치 전략 점검", "검증": "tail 구간 프레임에서 단계별 시간 로깅"},
+        {"_score": _cnt(_mask_ext & _abs_high), "신호": "Mask 극단 & Abs Error 동시", "권장 액션(추측)": "차선 미검출/과검출 시 오차 증가 가능성 → 안전 규칙(감속/정지)·fallback 로직 후보 검토", "검증": "교집합 프레임에서 실패 원인 유형 분류"},
+    ]
+    issues = [x for x in issues if x["_score"] > 0]
+    issues = sorted(issues, key=lambda x: x["_score"], reverse=True)[:4]
+    if not issues:
+        st.info("상대적으로 두드러진 꼬리/결측 신호가 크지 않습니다. (추측) 기준일을 늘려 추세로 보는 편이 유리합니다.")
+    else:
+        for i, it in enumerate(issues, start=1):
+            it["우선순위"] = i
+            it["프레임수"] = it.pop("_score")
+        st.dataframe(pd.DataFrame(issues)[["우선순위", "신호", "프레임수", "권장 액션(추측)", "검증"]], use_container_width=True)
+
 # -------------------------------------------------------------------------
     # 1) Summary + visuals
     st.markdown("### 핵심 지표 요약 (0113)")

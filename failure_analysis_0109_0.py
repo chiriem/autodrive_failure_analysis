@@ -808,8 +808,8 @@ def render() -> None:
     # Part IV-1: Timestamp 기반 이상치(후보) 구간 보기 (Part III 플래그 재사용)
 
     st.divider()
-    st.markdown("## Part V: Timestamp 기반 이상치 구간 보기")
-    st.caption("Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를 Timestamp 구간으로 집계합니다.")
+    st.markdown("## Part IV-1: Timestamp 기반 이상치(후보) 구간 보기")
+    st.caption("Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를 Timestamp 구간으로 집계합니다. (KST 변환 없음)")
 
     if TS_COL not in d.columns:
         st.info("Timestamp 컬럼이 없어 시간축 기반 구간 시각화를 생략합니다.")
@@ -821,7 +821,7 @@ def render() -> None:
             _render_timestamp_outlier_windows_from_flags(d, pctl=pctl)
 
     st.divider()
-    st.markdown("## Part VI: 전체 로그 보기")
+    st.markdown("## Part V: 전체 로그 보기")
     st.dataframe(df.drop(["Run ID", "Row In Run", "Event ID"], axis=1))
 
     _render_part_x(df=df, pctl=pctl, cand=cand)
@@ -831,7 +831,7 @@ def render() -> None:
 
 def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = None) -> None:
     st.divider()
-    st.markdown("## Part X: 분석에 기반한 자율주행 개선사항")
+    st.markdown("## Part X: 자율주행 개선사항 (분석 기반)")
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -937,66 +937,6 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
     err_missing_rate = None
     if ERROR_COL in df.columns:
         err_missing_rate = float(_to_num(df[ERROR_COL]).isna().mean() * 100.0)
-
-
-    # -------------------------------------------------------------------------
-    # 0) Insight summary + prioritized actions (auto)
-    st.markdown("### 요약")
-
-    _ratio = _to_num(df.get(MASK_RATIO_COL)).clip(0, 1)
-    _abs = _to_num(df.get(ABS_ERROR_COL))
-    _proc = _to_num(df.get(PROC_COL))
-
-    _mask_low = (_ratio.le(low_th)) if (low_th is not None) else pd.Series(False, index=df.index)
-    _mask_high = (_ratio.ge(high_th)) if (high_th is not None) else pd.Series(False, index=df.index)
-    _mask_ext = _mask_low | _mask_high
-
-    _abs_high = (_abs.ge(abs_tail_th)) if (abs_tail_th is not None) else pd.Series(False, index=df.index)
-    _proc_high = (_proc.ge(proc_tail_th)) if (proc_tail_th is not None) else pd.Series(False, index=df.index)
-
-    _err_missing = pd.Series(False, index=df.index)
-    if ERROR_COL in df.columns:
-        _err_missing = _to_num(df[ERROR_COL]).isna()
-
-    def _cnt(mask: pd.Series) -> int:
-        try:
-            return int(mask.fillna(False).sum())
-        except Exception:
-            return 0
-
-    def _pct(cnt: int) -> float:
-        return round((cnt / n_total) * 100.0, 2) if n_total > 0 else 0.0
-
-    # Key facts table (counts + rates)
-    facts = [
-        {"항목": "Lane Error 결측", "프레임수": _cnt(_err_missing), "비율(%)": _pct(_cnt(_err_missing)), "기준/메모": "ERROR_COL 결측"},
-        {"항목": f"Mask Ratio 하위 꼬리(≤ {low_th:.4f})" if low_th is not None else "Mask Ratio 하위 꼬리", "프레임수": _cnt(_mask_low), "비율(%)": _pct(_cnt(_mask_low)), "기준/메모": f"하위 {100-pctl}% 분위"},
-        {"항목": f"Mask Ratio 상위 꼬리(≥ {high_th:.4f})" if high_th is not None else "Mask Ratio 상위 꼬리", "프레임수": _cnt(_mask_high), "비율(%)": _pct(_cnt(_mask_high)), "기준/메모": f"상위 {pctl}% 분위"},
-        {"항목": f"Abs Lane Error 상위 꼬리(≥ {abs_tail_th:.4f})" if abs_tail_th is not None else "Abs Lane Error 상위 꼬리", "프레임수": _cnt(_abs_high), "비율(%)": _pct(_cnt(_abs_high)), "기준/메모": f"상위 {pctl}% 분위"},
-        {"항목": f"Processing Time 상위 꼬리(≥ {proc_tail_th:.2f} ms)" if proc_tail_th is not None else "Processing Time 상위 꼬리", "프레임수": _cnt(_proc_high), "비율(%)": _pct(_cnt(_proc_high)), "기준/메모": f"상위 {pctl}% 분위"},
-        {"항목": "Mask 극단 & Abs Error 꼬리(교집합)", "프레임수": _cnt(_mask_ext & _abs_high), "비율(%)": _pct(_cnt(_mask_ext & _abs_high)), "기준/메모": "동시 발생"},
-        {"항목": "Abs Error 꼬리 & Proc 꼬리(교집합)", "프레임수": _cnt(_abs_high & _proc_high), "비율(%)": _pct(_cnt(_abs_high & _proc_high)), "기준/메모": "동시 발생"},
-    ]
-    st.dataframe(pd.DataFrame(facts), use_container_width=True)
-
-    # Prioritized actions (speculative)
-    st.markdown("### 다음 액션 (권장, 추측)")
-    issues = []
-    issues.append({"_score": _cnt(_err_missing), "신호": "Lane Error 결측", "권장 액션(추측)": "로그/파이프라인에서 Lane Error 기록 경로 점검(컬럼 생성, 타입 변환, 저장 시점)", "검증": "결측 구간의 원본 로그/코드 경로 확인"})
-    issues.append({"_score": _cnt(_mask_low), "신호": "Mask Ratio 하위 꼬리", "권장 액션(추측)": "저가시성(역광/야간/오염) 프레임 표본 확인 → 전처리(감마/대비) 또는 데이터 보강", "검증": "하위 꼬리 프레임 20~50개 샘플링 확인"})
-    issues.append({"_score": _cnt(_mask_high), "신호": "Mask Ratio 상위 꼬리", "권장 액션(추측)": "과검출(반사/표지/노이즈) 여부 확인 → 후처리(연결성/폭 제약) 또는 필터 강화", "검증": "상위 꼬리 프레임 표본 확인"})
-    issues.append({"_score": _cnt(_abs_high), "신호": "Abs Lane Error 상위 꼬리", "권장 액션(추측)": "오차 큰 구간의 환경/모드/날씨 교차 확인 → 실패 조건 라벨링 및 재현 테스트", "검증": "tail 구간의 Weather/Time of Day 분포 비교"})
-    issues.append({"_score": _cnt(_proc_high), "신호": "Processing Time 상위 꼬리", "권장 액션(추측)": "지연 구간에서 모델/전처리 병목 확인 → 프로파일링 후 캐시/리사이즈/배치 전략 점검", "검증": "tail 구간 프레임에서 단계별 시간 로깅"})
-    issues.append({"_score": _cnt(_mask_ext & _abs_high), "신호": "Mask 극단 & Abs Error 동시", "권장 액션(추측)": "차선 미검출/과검출 시 오차 증가 가능성 → 안전 규칙(감속/정지)·fallback 로직 후보 검토", "검증": "교집합 프레임에서 실패 원인 유형 분류"})
-    issues = [x for x in issues if x["_score"] > 0]
-    issues = sorted(issues, key=lambda x: x["_score"], reverse=True)[:4]
-    if not issues:
-        st.info("상대적으로 두드러진 꼬리/결측 신호가 크지 않습니다. (추측) 기준일을 늘려 추세로 보는 편이 유리합니다.")
-    else:
-        for i, it in enumerate(issues, start=1):
-            it["우선순위"] = i
-            it["프레임수"] = it.pop("_score")
-        st.dataframe(pd.DataFrame(issues)[["우선순위", "신호", "프레임수", "권장 액션(추측)", "검증"]], use_container_width=True)
 
     # -------------------------------------------------------------------------
     # 1) Summary + visuals

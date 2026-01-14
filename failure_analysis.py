@@ -459,21 +459,32 @@ else:
             tmp["Error Recorded"] = np.where(err_missing, "Missing", "Present")
             tmp = tmp.dropna(subset=[MASK_RATIO_COL])
 
-            st.altair_chart(
-                alt.Chart(tmp)
-                .mark_bar(opacity=0.65)
-                .encode(
-                    x=alt.X(f"{MASK_RATIO_COL}:Q", bin=alt.Bin(maxbins=40), title="Mask White Ratio"),
-                    y=alt.Y("count()", title="Frames"),
-                    color=alt.Color("Error Recorded:N"),
-                    tooltip=[
-                        alt.Tooltip("Error Recorded:N"),
-                        alt.Tooltip("count():Q", title="frames"),
-                    ],
-                )
-                .properties(height=260, title="Mask White Ratio 분포 (Lane Error 기록 여부별)"),
-                use_container_width=True,
+            present_df = tmp[tmp["Error Recorded"] == "Present"]
+            missing_df = tmp[tmp["Error Recorded"] == "Missing"]
+
+            enc = dict(
+                x=alt.X(f"{MASK_RATIO_COL}:Q", bin=alt.Bin(maxbins=30), title="Mask White Ratio"),
+                y=alt.Y("count():Q", title="Frames"),
+                tooltip=[alt.Tooltip("count():Q", title="frames")],
             )
+
+            present = (
+                alt.Chart(present_df)
+                .mark_bar(opacity=0.75)
+                .encode(**enc)
+                .properties(height=140, title="Present")
+            )
+
+            missing = (
+                alt.Chart(missing_df)
+                .mark_bar(opacity=0.75)
+                .encode(**enc)
+                .properties(height=140, title="Missing")
+            )
+
+            chart = alt.vconcat(present, missing, spacing=10).resolve_scale(x="shared", y="shared")
+            st.altair_chart(chart, use_container_width=True)
+
 
             # Quick quantiles for missing vs present
             q = (
