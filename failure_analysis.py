@@ -249,7 +249,7 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
 
 analysis_mode = st.sidebar.radio(
     "분석 모드",
-    ["파일 업로드 (기본)", "0109 고정 데이터 분석", "0112 고정 데이터 분석", "0113 고정 데이터 분석"],
+    ["파일 업로드 (기본)", "0109 고정 데이터 분석", "0112 고정 데이터 분석", "0113 고정 데이터 분석", "0114 고정 데이터 분석"],
     index=0
 )
 
@@ -272,6 +272,12 @@ if analysis_mode == "0113 고정 데이터 분석":
     import failure_analysis_0113 as page_0113
     page_0113.render()
     st.stop()
+
+if analysis_mode == "0114 고정 데이터 분석":
+    # 0114 고정 데이터 분석은 별도 모듈(failure_analysis_0114.py)로 위임합니다.
+    import failure_analysis_0114 as page_0114
+    page_0114.render()
+    st.stop()    
 
 else:
     st.title("자율주행 실패 분석 (OpenCV 로그: Mask Ratio + Error 중심)")

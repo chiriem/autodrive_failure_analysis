@@ -14,20 +14,20 @@ from fa_utils import (
     _make_tooltip, _describe_missing, perform_linear_regression, draw_histogram,
 )
 
-_FIXED_FILENAME = "0113_09_log.csv"
-_BASELINE_FILENAME = "0112_11_log.csv"
+_FIXED_FILENAME = "0114_16_log.csv"
+_BASELINE_FILENAME = "0113_09_log.csv"
 
 MASK_RATIO_PLOT_MAX = 0.30  # x축을 이 범위로 고정(빈 공간 축소)
 
 @st.cache_data(show_spinner=False)
 def _load_fixed_data() -> pd.DataFrame:
     base_dir = Path(__file__).resolve().parent
-    return load_fixed_csv(_FIXED_FILENAME, run_id="run_0113_fixed", base_dir=base_dir)
+    return load_fixed_csv(_FIXED_FILENAME, run_id="run_0114_fixed", base_dir=base_dir)
 
 @st.cache_data(show_spinner=False)
-def _load_fixed_data_0112_baseline() -> pd.DataFrame:
+def _load_fixed_data_0113_baseline() -> pd.DataFrame:
     base_dir = Path(__file__).resolve().parent
-    return try_load_fixed_csv(_BASELINE_FILENAME, run_id="run_0112_baseline", base_dir=base_dir)
+    return try_load_fixed_csv(_BASELINE_FILENAME, run_id="run_0113_baseline", base_dir=base_dir)
 
 
 # =============================================================================
@@ -243,7 +243,7 @@ def render() -> None:
     _maybe_set_page_config()
     # UI
 
-    st.title("0113 자율주행 실패 분석")
+    st.title("0114 자율주행 실패 분석")
     st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다.")
 
     df = pd.DataFrame()
@@ -612,7 +612,7 @@ def render() -> None:
         max_value=99,
         value=95,
         step=1,
-        key="outlier_sensitivity_pctl_0113",
+        key="outlier_sensitivity_pctl_0114",
         help="높을수록 더 극단(상위/하위 꼬리)만 후보로 잡습니다. (오차/처리시간: 상위 pctl, 마스크비율: 하위(100-pctl) 및 상위 pctl)"
     )
 
@@ -958,15 +958,15 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
     base_df = None
     base = None
     try:
-        base_df = _load_fixed_data_0112_baseline()
+        base_df = _load_fixed_data_0113_baseline()
         if (base_df is None) or (getattr(base_df, "empty", False)):
             base_df = None
             base = None
-            st.info(f"0112 비교용 파일({_BASELINE_FILENAME})이 없어 비교(그래프/표 일부)를 생략합니다. (파일을 두면 자동 비교됩니다.)")
+            st.info(f"0113 비교용 파일({_BASELINE_FILENAME})이 없어 비교(그래프/표 일부)를 생략합니다. (파일을 두면 자동 비교됩니다.)")
         else:
             base = _metrics(base_df)
     except Exception as e:
-        st.warning(f"0112 비교 로드/계산 중 오류로 비교를 생략합니다: {e}")
+        st.warning(f"0113 비교 로드/계산 중 오류로 비교를 생략합니다: {e}")
 
     st.markdown("### 요약")
 
@@ -1062,7 +1062,7 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
 
 # -------------------------------------------------------------------------
     # 1) Summary + visuals
-    st.markdown("### 핵심 지표 요약 (0113)")
+    st.markdown("### 핵심 지표 요약 (0114)")
     summary_rows = [
         {"항목": "총 프레임 수", "값": f"{cur['n_total']:,}", "의미": "분석 대상 전체 행 수"},
         {"항목": "Mask Ratio p05 / p50 / p95", "값": f"{_fmt(cur['ratio_p05'], '{:.4f}')} / {_fmt(cur['ratio_p50'], '{:.4f}')} / {_fmt(cur['ratio_p95'], '{:.4f}')}", "의미": "마스크 검출량의 하위/중앙/상위 수준(0~1)"},
@@ -1094,25 +1094,25 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
         _hist_with_rules(
             ratio_cur,
             colname=MASK_RATIO_COL,
-            title="Mask White Ratio 분포(0113 요약)",
+            title="Mask White Ratio 분포(0114 요약)",
             rules=[(cur.get("low_th"), f"low_th (p{100 - pctl})"), (cur.get("high_th"), f"high_th (p{pctl})")],
             domain=(0.0, 1.0),
             height=240,
         )
     with c2:
         if ABS_ERROR_COL in df.columns:
-            _hist_with_rules(abs_cur, ABS_ERROR_COL, "Abs Lane Error 분포(0113 요약)", rules=[(cur.get("abs_tail_th"), f"tail_th (p{pctl})")], height=240)
+            _hist_with_rules(abs_cur, ABS_ERROR_COL, "Abs Lane Error 분포(0114 요약)", rules=[(cur.get("abs_tail_th"), f"tail_th (p{pctl})")], height=240)
         else:
             st.info(f"'{ABS_ERROR_COL}' 컬럼이 없어 오차 분포 시각화를 생략합니다.")
     with c3:
         if PROC_COL in df.columns:
-            _hist_with_rules(proc_cur, PROC_COL, "Processing Time 분포(0113 요약)", rules=[(cur.get("proc_tail_th"), f"tail_th (p{pctl})")], height=240)
+            _hist_with_rules(proc_cur, PROC_COL, "Processing Time 분포(0114 요약)", rules=[(cur.get("proc_tail_th"), f"tail_th (p{pctl})")], height=240)
         else:
             st.info(f"'{PROC_COL}' 컬럼이 없어 처리시간 분포 시각화를 생략합니다.")
 
     # -------------------------------------------------------------------------
     # 2) Candidate distribution visuals
-    st.markdown("### 후보(Part III) 분포 요약 (0113)")
+    st.markdown("### 후보(Part III) 분포 요약 (0114)")
     if isinstance(cand, pd.DataFrame) and (not cand.empty) and ("Primary Tag" in cand.columns):
         # n_total (전체 프레임 수) - 일부 코드에서 n_total 변수를 직접 참조할 수 있어 명시적으로 둡니다.
         n_total = int(cur.get("n_total", len(df)))
@@ -1136,7 +1136,7 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
                 x=alt.X("count:Q", title="Candidate frames"),
                 tooltip=["Primary Tag:N", "count:Q", "% (전체):Q", "% (후보 내):Q"],
             )
-            .properties(height=260, title="후보(Primary Tag) 카운트(0113)"),
+            .properties(height=260, title="후보(Primary Tag) 카운트(0114)"),
             use_container_width=True,
         )
         st.dataframe(tag_df, hide_index=True, use_container_width=True)
@@ -1145,7 +1145,7 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
 
     # -------------------------------------------------------------------------
     # 3) Baseline comparison visuals
-    st.markdown("### 0112 대비 변화 (0113 - 0112)")
+    st.markdown("### 0113 대비 변화 (0114 - 0113)")
     if base is not None:
         comp_rows = [
             ("Mask Ratio p50", cur["ratio_p50"], base["ratio_p50"], "중앙값(전반적 검출량)"),
@@ -1155,16 +1155,16 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
             (f"Abs Error tail-rate(≥p{pctl})", cur["abs_tail_rate"], base["abs_tail_rate"], "오차 과다 꼬리 비중(%)"),
             (f"Proc Time tail-rate(≥p{pctl})", cur["proc_tail_rate"], base["proc_tail_rate"], "지연 꼬리 비중(%)"),
         ]
-        comp = pd.DataFrame(comp_rows, columns=["metric", "0113", "0112", "의미"])
-        comp["delta(0113-0112)"] = comp.apply(lambda r: None if (r["0113"] is None or r["0112"] is None) else float(r["0113"]) - float(r["0112"]), axis=1)
+        comp = pd.DataFrame(comp_rows, columns=["metric", "0114", "0113", "의미"])
+        comp["delta(0114-0113)"] = comp.apply(lambda r: None if (r["0114"] is None or r["0113"] is None) else float(r["0114"]) - float(r["0113"]), axis=1)
         st.dataframe(comp, hide_index=True, use_container_width=True)
 
         # Chart: grouped bars
-        chart_df = comp.melt(id_vars=["metric", "의미"], value_vars=["0113", "0112"], var_name="dataset", value_name="value").dropna(subset=["value"])
-        # 핵심 지표 비교(0113 vs 0112)
+        chart_df = comp.melt(id_vars=["metric", "의미"], value_vars=["0114", "0113"], var_name="dataset", value_name="value").dropna(subset=["value"])
+        # 핵심 지표 비교(0114 vs 0113)
         # - 기존에는 두 데이터셋 막대가 같은 위치에 겹쳐 '한 줄로 합쳐진 것'처럼 보일 수 있어,
         #   (Altair 버전에 따라 xOffset이 무시되거나, 수평 막대에서 offset이 기대대로 동작하지 않는 경우가 있음)
-        #   yOffset(가능한 경우)을 사용해 항목별로 0112 → 0113 순서로 막대를 분리합니다.
+        #   yOffset(가능한 경우)을 사용해 항목별로 0113 → 0114 순서로 막대를 분리합니다.
         # - yOffset이 지원되지 않는 Altair 버전에서는 row facet으로 안전하게 분리합니다.
 
         core_bar = (
@@ -1172,31 +1172,31 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
             .mark_bar()
             .encode(
                 y=alt.Y("metric:N", sort=None, title=None),
-                yOffset=alt.YOffset("dataset:N", sort=["0112", "0113"]),
+                yOffset=alt.YOffset("dataset:N", sort=["0113", "0114"]),
                 x=alt.X("value:Q", title="percentage(%)"),
-                color=alt.Color("dataset:N", sort=["0112", "0113"], legend=alt.Legend(orient="top")),
+                color=alt.Color("dataset:N", sort=["0113", "0114"], legend=alt.Legend(orient="top")),
                 tooltip=["metric:N", "dataset:N", alt.Tooltip("value:Q"), "의미:N"],
             )
-            .properties(height=320, title="핵심 지표 비교(0113 vs 0112)")
+            .properties(height=320, title="핵심 지표 비교(0114 vs 0113)")
         )
 
         st.altair_chart(core_bar, use_container_width=True)
 
         # Small compare hist (facet) for ratio only
     comb_ratio = pd.concat([
-        pd.DataFrame({'dataset': '0113', MASK_RATIO_COL: pd.to_numeric(ratio_cur, errors='coerce').dropna()}),
-        pd.DataFrame({'dataset': '0112', MASK_RATIO_COL: pd.to_numeric(base_df[MASK_RATIO_COL], errors='coerce').dropna()}) if base_df is not None else pd.DataFrame(),
+        pd.DataFrame({'dataset': '0114', MASK_RATIO_COL: pd.to_numeric(ratio_cur, errors='coerce').dropna()}),
+        pd.DataFrame({'dataset': '0113', MASK_RATIO_COL: pd.to_numeric(base_df[MASK_RATIO_COL], errors='coerce').dropna()}) if base_df is not None else pd.DataFrame(),
     ], ignore_index=True)
     if not comb_ratio.empty:
         # x축 빈 공간을 줄이기 위해 0~MASK_RATIO_PLOT_MAX 범위로 고정합니다.
-        n_clip_0113 = int((pd.to_numeric(ratio_cur, errors='coerce') > MASK_RATIO_PLOT_MAX).sum())
-        n_clip_0112 = int((pd.to_numeric(base_df[MASK_RATIO_COL], errors='coerce') > MASK_RATIO_PLOT_MAX).sum()) if base_df is not None else 0
-        if n_clip_0113 or n_clip_0112:
-            st.caption(f"※ Mask White Ratio > {MASK_RATIO_PLOT_MAX:.2f} 구간은 비교 시각화에서 제외했습니다 (0113: {n_clip_0113}프레임, 0112: {n_clip_0112}프레임).")
+        n_clip_0114 = int((pd.to_numeric(ratio_cur, errors='coerce') > MASK_RATIO_PLOT_MAX).sum())
+        n_clip_0113 = int((pd.to_numeric(base_df[MASK_RATIO_COL], errors='coerce') > MASK_RATIO_PLOT_MAX).sum()) if base_df is not None else 0
+        if n_clip_0114 or n_clip_0113:
+            st.caption(f"※ Mask White Ratio > {MASK_RATIO_PLOT_MAX:.2f} 구간은 비교 시각화에서 제외했습니다 (0114: {n_clip_0114}프레임, 0113: {n_clip_0113}프레임).")
         comb_ratio_plot = comb_ratio[comb_ratio[MASK_RATIO_COL] <= MASK_RATIO_PLOT_MAX].copy()
 
         # 데이터가 0~0.30 범위에 몰려있더라도 실제 분포가 0.05~0.15처럼 더 좁으면,
-        # 우측 빈 공간이 커집니다. 비교 공정성을 위해 0113/0112 각각의 상위 분위(99.5%)를
+        # 우측 빈 공간이 커집니다. 비교 공정성을 위해 0114/0113 각각의 상위 분위(99.5%)를
         # 계산한 뒤, 둘 중 큰 값을 기준으로 x축 상한을 자동 축소합니다(최대 0.30, 최소 0.12).
         def _safe_q(s: pd.Series, q: float):
             s2 = pd.to_numeric(s, errors="coerce").dropna()
@@ -1204,13 +1204,13 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
                 return None
             return float(s2.quantile(q))
 
+        q_0114 = _safe_q(comb_ratio_plot.loc[comb_ratio_plot["dataset"] == "0114", MASK_RATIO_COL], 0.995)
         q_0113 = _safe_q(comb_ratio_plot.loc[comb_ratio_plot["dataset"] == "0113", MASK_RATIO_COL], 0.995)
-        q_0112 = _safe_q(comb_ratio_plot.loc[comb_ratio_plot["dataset"] == "0112", MASK_RATIO_COL], 0.995)
-        q_candidates = [v for v in [q_0113, q_0112] if v is not None]
+        q_candidates = [v for v in [q_0114, q_0113] if v is not None]
         x_max = MASK_RATIO_PLOT_MAX if not q_candidates else min(MASK_RATIO_PLOT_MAX, max(0.12, max(q_candidates) + 0.01))
+        q_0114_str = f"{q_0114:.3f}" if q_0114 is not None else "NA"
         q_0113_str = f"{q_0113:.3f}" if q_0113 is not None else "NA"
-        q_0112_str = f"{q_0112:.3f}" if q_0112 is not None else "NA"
-        st.caption(f"Mask White Ratio 분포 비교 x축: 0 ~ {x_max:.2f} (0113 q99.5={q_0113_str} / 0112 q99.5={q_0112_str}, 최대 {MASK_RATIO_PLOT_MAX:.2f})")
+        st.caption(f"Mask White Ratio 분포 비교 x축: 0 ~ {x_max:.2f} (0114 q99.5={q_0114_str} / 0113 q99.5={q_0113_str}, 최대 {MASK_RATIO_PLOT_MAX:.2f})")
 
         col_hist, col_info = st.columns([2, 1], gap="large")
         with col_hist:
@@ -1228,13 +1228,13 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
                     row=alt.Row("dataset:N", title=None),
                     tooltip=[alt.Tooltip("count():Q", title="frames")],
                 )
-                .properties(height=120, title="Mask Ratio 분포 비교(0113 vs 0112)"),
+                .properties(height=120, title="Mask Ratio 분포 비교(0114 vs 0113)"),
                 use_container_width=True,
             )
     else:
-        st.info("0112 비교용 데이터가 없어, 변화(비교) 시각화는 생략됩니다.")
+        st.info("0113 비교용 데이터가 없어, 변화(비교) 시각화는 생략됩니다.")
 
-    st.markdown("- 0113의 모델은 0112보다 차선 인식을 못함")
+    st.markdown("- 0113보다 개선됨. 하지만 여전히 0112보다 성능이 좋다고 할 수 없음")
 
     # -------------------------------------------------------------------------
     # 4) Recommendations + visuals per explanation
