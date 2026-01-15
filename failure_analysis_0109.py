@@ -22,10 +22,13 @@ def _load_fixed_data() -> pd.DataFrame:
     return load_fixed_csv(_FIXED_FILENAME, run_id="run_0109_fixed", base_dir=base_dir)
 
 
-# =============================================================================
-# Timestamp 기반 이상치(후보) 구간 시각화 (x축은 Timestamp 숫자 그대로 사용)
-
 def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=None) -> None:
+    """Timestamp 기반 이상치(후보) 구간 시각화
+    
+    Part III에서 계산된 후보 플래그를 Timestamp 구간으로 집계하여 '이상치(후보) 밀도'를 시각화합니다.
+    - x축: Timestamp(숫자 그대로, 큰 공백 압축)
+    - y축: 구간별 outlier rate(%)
+    """
     """Part III에서 계산된 후보 플래그(mask_low/mask_high/err_high/proc_high)를
     Timestamp 구간으로 집계하여 '이상치(후보) 밀도'를 시각화합니다.
 
@@ -48,126 +51,70 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
     x_type = "Q"
     x_title = "Timestamp (큰 공백 압축)"
 
-
     def _agg_timeline(flag_series: pd.Series):
-
-        """Timestamp 큰 공백(gap)을 자동 감지해 압축(ts_plot)한 뒤, ts_plot 기준으로 bin 집계한다.
-
-        - gap 기준(하드코딩): gap > median_step * 50
-
+        """Timestamp 큰 공백(gap)을 자동 감지해 압축(ts_plot)한 뒤, ts_plot 기준으로 bin 집계
+        
+        - gap 기준: gap > median_step * 50
         - gap을 화면에 남기는 길이: keep = median_step * 3
-
         """
-
         tmp = pd.DataFrame({
-
             "ts": pd.to_numeric(dfv[x_col], errors="coerce"),
-
             "is_out": flag_series.fillna(False).astype(bool),
-
         }).dropna(subset=["ts"])
 
         if tmp.empty:
-
-            return pd.DataFrame(), ""
-
+            return pd.DataFrame(), "", pd.DataFrame()
 
         # 정렬 후 diff로 큰 gap 감지
-
         tmp = tmp.sort_values("ts").reset_index(drop=True)
-
         d = tmp["ts"].diff()
-
         d_pos = d[(d > 0) & d.notna()]
 
         if d_pos.empty:
-
             step = 1.0
-
         else:
-
             step = float(d_pos.median())
 
-
         gap_th = step * 50.0
-
         keep = step * 3.0
 
-
         tmp["_gap"] = d
-
         tmp["_excess"] = np.where((tmp["_gap"] > gap_th) & tmp["_gap"].notna(), tmp["_gap"] - keep, 0.0)
-
         tmp["_shift"] = tmp["_excess"].cumsum().fillna(0.0)
-
         tmp["ts_plot"] = tmp["ts"].astype(float) - tmp["_shift"]
 
-
-        # gap 요약(필요시 화면/디버깅용)
-
+        # gap 요약
         gaps = tmp.loc[tmp["_excess"] > 0, ["ts", "_gap", "_excess"]].copy()
-
         if not gaps.empty:
-
             gaps.insert(0, "ts_prev", tmp["ts"].shift(1).loc[gaps.index].values)
-
             gaps = gaps.rename(columns={"ts": "ts_next", "_gap": "gap", "_excess": "compressed_by"})
-
         else:
-
             gaps = pd.DataFrame(columns=["ts_prev", "ts_next", "gap", "compressed_by"])
 
-
-        # ts_plot 기준으로 binning (큰 공백이 줄어들어 빈 bin이 크게 감소)
-
+        # ts_plot 기준으로 binning
         n_bins = int(min(250, max(80, round(tmp.shape[0] / 30))))
-
         try:
-
             tmp["_bin"] = pd.cut(tmp["ts_plot"], bins=n_bins)
-
         except Exception:
-
             tmp["_bin"] = pd.cut(np.arange(len(tmp)), bins=n_bins)
 
-
         g = (
-
             tmp.groupby("_bin", observed=True)
-
             .agg(
-
                 ts_plot_mid=("ts_plot", "mean"),
-
                 ts_min=("ts", "min"),
-
                 ts_max=("ts", "max"),
-
                 frames=("is_out", "size"),
-
                 outliers=("is_out", "sum"),
-
             )
-
             .reset_index(drop=True)
-
         )
-
         g = g.sort_values("ts_plot_mid")
-
-        # 기존 차트 코드를 최소 수정하기 위해 x축용 컬럼명을 ts로 맞춤(= 압축 좌표)
-
         g["ts"] = g["ts_plot_mid"]
-
         g["outlier_rate"] = (g["outliers"] / g["frames"] * 100.0).replace([np.inf, -np.inf], np.nan).round(2)
 
-
         gap_cnt = int((tmp["_excess"] > 0).sum())
-
         freq_txt = f"{n_bins} bins / gap-skip={gap_cnt}"
-
-        # gaps를 함수 밖에서 보고 싶으면 반환값에 포함시키는 대신, 전역/클로저 변수로 보관
-
         return g, freq_txt, gaps
 
 
@@ -201,20 +148,18 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
         st.altair_chart(chart, use_container_width=True)
 
         if gaps is not None and (not gaps.empty):
-            with st.expander(f"{metric_title} 큰 Timestamp 공백(gap) Top 10", expanded=False):
-                gg = gaps.sort_values(["gap"], ascending=False).head(10).copy()
-                st.caption("연속 timestamp 축에서 화면을 과도하게 늘리는 큰 공백을 자동 감지해, 차트에서는 해당 공백을 압축했습니다.")
-                st.dataframe(gg, hide_index=True, use_container_width=True)
+            gg = gaps.sort_values(["gap"], ascending=False).head(10).copy()
+            st.caption("연속 timestamp 축에서 화면을 과도하게 늘리는 큰 공백을 자동 감지해, 차트에서는 해당 공백을 압축했습니다.")
+            st.dataframe(gg, hide_index=True, use_container_width=True)
 
         top5 = g.sort_values(["outlier_rate", "outliers", "frames"], ascending=False).head(5).copy()
         top5["구간"] = top5["ts_min"].astype(str) + " ~ " + top5["ts_max"].astype(str)
 
-        with st.expander(f"{metric_title} 이상치(후보) 구간 Top 5", expanded=False):
-            cap = f"집계 단위: {freq_txt}"
-            if pctl is not None:
-                cap += f" / 민감도(pctl): {pctl}"
-            st.caption(cap)
-            st.dataframe(top5[["구간", "frames", "outliers", "outlier_rate"]], hide_index=True, use_container_width=True)
+        cap = f"집계 단위: {freq_txt}"
+        if pctl is not None:
+            cap += f" / 민감도(pctl): {pctl}"
+        st.caption(cap)
+        st.dataframe(top5[["구간", "frames", "outliers", "outlier_rate"]], hide_index=True, use_container_width=True)
 
     _plot_one(
         ["mask_low", "mask_high"],
@@ -249,7 +194,7 @@ def render() -> None:
         st.error(f"CSV 로드 실패: {e}")
         st.stop()
 
-    # Required checks
+    # 필수 컬럼 검증
     missing = [c for c in [MASK_RATIO_COL] if c not in df.columns]
     if missing:
         st.error(
@@ -260,11 +205,10 @@ def render() -> None:
         )
         st.stop()
 
-    # Timestamp is recommended for time-based interpretation
     if TS_COL not in df.columns:
         st.warning("Timestamp 컬럼이 없습니다. 이벤트 식별은 Event ID로 가능하지만, 시간 기반 해석(구간/추세)은 제한될 수 있습니다.")
 
-    # Column config
+    # 컬럼 설정
     COLUMN_CONFIG = {
         TS_COL: st.column_config.NumberColumn(format='%.0f'),
         QUALITY_COL: st.column_config.ProgressColumn(min_value=0, max_value=100, format="compact", width=130),
@@ -277,13 +221,13 @@ def render() -> None:
     }
 
     def _column_config_for(df_or_cols) -> dict:
-        """Filter COLUMN_CONFIG to only columns that exist (avoids errors when optional cols are missing)."""
+        """COLUMN_CONFIG를 실제로 존재하는 컬럼만 필터링 (선택적 컬럼 누락 시 오류 방지)"""
         cols = df_or_cols.columns if hasattr(df_or_cols, "columns") else list(df_or_cols)
         return {k: v for k, v in COLUMN_CONFIG.items() if k in cols}
 
     # =============================================================================
     # ===============================================
-    # Part 0: sanity checks
+    # Part 0: 컬럼/결측/커버리지 확인
 
     st.divider()
     st.subheader("Part 0: 컬럼/결측/커버리지 확인")
@@ -334,7 +278,7 @@ def render() -> None:
         tab_overview, tab_bins, tab_env = st.tabs(["개요", "Mask Ratio 구간", "환경"])
 
         with tab_overview:
-            # Compare mask ratio distributions by missingness
+            # 결측 여부별 마스크 비율 분포 비교
             if MASK_RATIO_COL in df.columns:
                 tmp = df[[MASK_RATIO_COL]].copy()
                 tmp[MASK_RATIO_COL] = pd.to_numeric(tmp[MASK_RATIO_COL], errors="coerce").clip(0, 1)
@@ -358,7 +302,7 @@ def render() -> None:
                     use_container_width=True,
                 )
 
-                # Quick quantiles for missing vs present
+                # 결측 vs 존재에 대한 빠른 분위수
                 q = (
                     tmp.groupby("Error Recorded")[MASK_RATIO_COL]
                     .quantile([0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99])
@@ -385,7 +329,7 @@ def render() -> None:
             else:
                 edges = [0.0, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 1.0]
 
-            # Threshold highlight (matches earlier analysis style)
+            # 임계값 강조 (이전 분석 스타일과 일치)
             low_th = st.slider("저비율 강조 임계값", min_value=0.0, max_value=0.2, value=0.01, step=0.001)
 
             r = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce").clip(0, 1)
@@ -418,7 +362,7 @@ def render() -> None:
             )
             st.dataframe(bin_summary, hide_index=True, use_container_width=True)
 
-            # Highlight: missing rate under low_th
+            # 강조: low_th 이하의 결측률
             low_mask = r.le(low_th)
             if low_mask.any():
                 st.write(
@@ -611,7 +555,7 @@ def render() -> None:
 
     d = df.copy()
 
-    # Normalize numeric columns safely
+    # 숫자 컬럼을 안전하게 정규화
     d[MASK_RATIO_COL] = pd.to_numeric(d[MASK_RATIO_COL], errors="coerce").clip(0, 1)
 
     r = d[MASK_RATIO_COL].dropna()
@@ -1150,114 +1094,109 @@ def _render_part_x(df: pd.DataFrame, pctl: int, cand: 'pd.DataFrame | None' = No
 
     # 1) Low ratio
     if (low_rate is not None) and (low_th is not None) and (low_rate >= 5.0):
-        with st.expander("1) 선이 잘 안 보이는 구간 대비 (Mask Ratio 아주 낮음)"):
-            st.markdown(
-                f"- Mask Ratio ≤ **{low_th:.4f}** 구간이 **{low_rate:.2f}%** 입니다. "
-                "저가시성(어둠/그림자/역광/흰선 훼손 등)에서 검출량이 급감할 수 있습니다."
+        st.markdown(
+            f"- Mask Ratio ≤ **{low_th:.4f}** 구간이 **{low_rate:.2f}%** 입니다. "
+            "저가시성(어둠/그림자/역광/흰선 훼손 등)에서 검출량이 급감할 수 있습니다."
+        )
+        _hist_with_rules(ratio, MASK_RATIO_COL, "Mask Ratio 분포(저가시성 꼬리 확인)", rules=[(low_th, "low_th")], domain=(0.0, 1.0), height=260)
+        # environment breakdown
+        env_cols = [c for c in [WEATHER_COL, TOD_COL] if c in df.columns]
+        if env_cols:
+            ecol = st.selectbox("저가시성 프레임 환경 분해 기준", options=env_cols, index=0, key="partx0109_low_env")
+            low_df = df.loc[ratio.le(low_th)].copy()
+            ed = low_df[ecol].astype("string").fillna("Unknown").value_counts().reset_index()
+            ed.columns = [ecol, "frames"]
+            st.altair_chart(
+                alt.Chart(ed)
+                .mark_bar()
+                .encode(x=alt.X(f"{ecol}:N", sort="-y", axis=alt.Axis(labelAngle=-20)), y="frames:Q", tooltip=[ecol, "frames:Q"])
+                .properties(height=240, title=f"저가시성(≤low_th) 프레임의 {ecol} 분포"),
+                use_container_width=True,
             )
-            _hist_with_rules(ratio, MASK_RATIO_COL, "Mask Ratio 분포(저가시성 꼬리 확인)", rules=[(low_th, "low_th")], domain=(0.0, 1.0), height=260)
-            # environment breakdown
-            env_cols = [c for c in [WEATHER_COL, TOD_COL] if c in df.columns]
-            if env_cols:
-                ecol = st.selectbox("저가시성 프레임 환경 분해 기준", options=env_cols, index=0, key="partx0109_low_env")
-                low_df = df.loc[ratio.le(low_th)].copy()
-                ed = low_df[ecol].astype("string").fillna("Unknown").value_counts().reset_index()
-                ed.columns = [ecol, "frames"]
-                st.altair_chart(
-                    alt.Chart(ed)
-                    .mark_bar()
-                    .encode(x=alt.X(f"{ecol}:N", sort="-y", axis=alt.Axis(labelAngle=-20)), y="frames:Q", tooltip=[ecol, "frames:Q"])
-                    .properties(height=240, title=f"저가시성(≤low_th) 프레임의 {ecol} 분포"),
-                    use_container_width=True,
-                )
 
-            st.markdown("- 권장: (a) 밝기/대비/감마 보정, (b) ROI/전처리 조정, (c) 미검출 시 감속/정지 등 안전 규칙과 테스트")
+        st.markdown("- 권장: (a) 밝기/대비/감마 보정, (b) ROI/전처리 조정, (c) 미검출 시 감속/정지 등 안전 규칙과 테스트")
 
     # 2) High ratio
     if (high_rate is not None) and (high_th is not None) and (high_rate >= 5.0):
-        with st.expander("2) 과검출/노이즈 구간 대비 (Mask Ratio 아주 높음)"):
-            st.markdown(
-                f"- Mask Ratio ≥ **{high_th:.4f}** 구간이 **{high_rate:.2f}%** 입니다. "
-                "흰 영역이 과도하게 잡히면(노면 반사/표지/노이즈) 중심 추정이 흔들릴 수 있습니다."
-            )
-            _hist_with_rules(ratio, MASK_RATIO_COL, "Mask Ratio 분포(과검출 꼬리 확인)", rules=[(high_th, "high_th")], domain=(0.0, 1.0), height=260)
-            st.markdown("- 권장: (a) 이진화 임계/후처리(모폴로지) 조정, (b) 차선 형태 제약(폭/연결성) 추가, (c) 차선 후보 필터 강화")
+        st.markdown(
+            f"- Mask Ratio ≥ **{high_th:.4f}** 구간이 **{high_rate:.2f}%** 입니다. "
+            "흰 영역이 과도하게 잡히면(노면 반사/표지/노이즈) 중심 추정이 흔들릴 수 있습니다."
+        )
+        _hist_with_rules(ratio, MASK_RATIO_COL, "Mask Ratio 분포(과검출 꼬리 확인)", rules=[(high_th, "high_th")], domain=(0.0, 1.0), height=260)
+        st.markdown("- 권장: (a) 이진화 임계/후처리(모폴로지) 조정, (b) 차선 형태 제약(폭/연결성) 추가, (c) 차선 후보 필터 강화")
 
     # 3) High abs error
     if (abs_tail_rate is not None) and (abs_tail_th is not None) and (abs_tail_rate >= 5.0):
-        with st.expander("3) 오차 과다 프레임 원인 후보 점검 (Abs Error tail)"):
-            st.markdown(
-                f"- Abs Lane Error ≥ **{abs_tail_th:.2f}** (상위 {100 - pctl}% 꼬리) 구간이 **{abs_tail_rate:.2f}%** 입니다."
-            )
-            _hist_with_rules(abs_err, ABS_ERROR_COL, "Abs Lane Error 분포(꼬리 확인)", rules=[(abs_tail_th, "tail_th")], height=260)
+        st.markdown(
+            f"- Abs Lane Error ≥ **{abs_tail_th:.2f}** (상위 {100 - pctl}% 꼬리) 구간이 **{abs_tail_rate:.2f}%** 입니다."
+        )
+        _hist_with_rules(abs_err, ABS_ERROR_COL, "Abs Lane Error 분포(꼬리 확인)", rules=[(abs_tail_th, "tail_th")], height=260)
 
-            # Scatter: ratio vs abs error (candidate highlight if available)
-            scat = pd.DataFrame({MASK_RATIO_COL: ratio, ABS_ERROR_COL: abs_err})
-            scat = scat.dropna()
-            if not scat.empty:
-                scat["is_tail"] = scat[ABS_ERROR_COL].ge(abs_tail_th)
-                st.altair_chart(
-                    alt.Chart(scat)
-                    .mark_point(filled=True, opacity=0.55)
-                    .encode(
-                        x=alt.X(f"{MASK_RATIO_COL}:Q", scale=alt.Scale(domain=[0, 1])),
-                        y=alt.Y(f"{ABS_ERROR_COL}:Q"),
-                        shape=alt.Shape("is_tail:N", title="AbsError tail"),
-                        tooltip=[alt.Tooltip(MASK_RATIO_COL, format=".4f"), alt.Tooltip(ABS_ERROR_COL, format=".2f")],
-                    )
-                    .properties(height=320, title="Mask Ratio ↔ Abs Error (tail 프레임 표시)"),
-                    use_container_width=True,
+        # Scatter: ratio vs abs error (candidate highlight if available)
+        scat = pd.DataFrame({MASK_RATIO_COL: ratio, ABS_ERROR_COL: abs_err})
+        scat = scat.dropna()
+        if not scat.empty:
+            scat["is_tail"] = scat[ABS_ERROR_COL].ge(abs_tail_th)
+            st.altair_chart(
+                alt.Chart(scat)
+                .mark_point(filled=True, opacity=0.55)
+                .encode(
+                    x=alt.X(f"{MASK_RATIO_COL}:Q", scale=alt.Scale(domain=[0, 1])),
+                    y=alt.Y(f"{ABS_ERROR_COL}:Q"),
+                    shape=alt.Shape("is_tail:N", title="AbsError tail"),
+                    tooltip=[alt.Tooltip(MASK_RATIO_COL, format=".4f"), alt.Tooltip(ABS_ERROR_COL, format=".2f")],
                 )
+                .properties(height=320, title="Mask Ratio ↔ Abs Error (tail 프레임 표시)"),
+                use_container_width=True,
+            )
 
-            st.markdown("- 권장: (a) 차선 중심 추정 로직(가정/평균/fit) 점검, (b) 한쪽 차선만 검출 시 fallback, (c) 곡률/차선폭 제약 도입")
+        st.markdown("- 권장: (a) 차선 중심 추정 로직(가정/평균/fit) 점검, (b) 한쪽 차선만 검출 시 fallback, (c) 곡률/차선폭 제약 도입")
 
     # 4) Lane Error missingness
     if (err_missing_rate is not None) and (err_missing_rate >= 5.0):
-        with st.expander("4) 오차 기록 누락(NA) 원인 로깅 강화"):
-            st.markdown(f"- Lane Error 결측률이 **{err_missing_rate:.2f}%** 입니다. NA는 '미검출/한쪽만 검출/모드' 등의 상태를 함께 남겨야 재현성이 올라갑니다.")
-            if ERROR_COL in df.columns:
-                miss = _to_num(df[ERROR_COL]).isna()
-                mdf = pd.DataFrame({MASK_RATIO_COL: ratio, "missing": miss}).dropna(subset=[MASK_RATIO_COL])
-                mdf["ratio_bin"] = pd.cut(mdf[MASK_RATIO_COL], bins=[0, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 1.0], include_lowest=True)
-                ms = mdf.groupby("ratio_bin", dropna=False)["missing"].agg(frames="size", missing="sum").reset_index()
-                ms["missing_%"] = (ms["missing"] / ms["frames"] * 100.0).round(2)
-                st.altair_chart(
-                    alt.Chart(ms.dropna(subset=["ratio_bin"]))
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("ratio_bin:N", sort=None, title="Mask Ratio bin"),
-                        y=alt.Y("missing_%:Q", scale=alt.Scale(domain=[0, 100]), title="Lane Error missing (%)"),
-                        tooltip=["ratio_bin:N", "frames:Q", "missing:Q", "missing_%:Q"],
-                    )
-                    .properties(height=300, title="Mask Ratio 구간별 Lane Error 결측률(요약)"),
-                    use_container_width=True,
+        st.markdown(f"- Lane Error 결측률이 **{err_missing_rate:.2f}%** 입니다. NA는 '미검출/한쪽만 검출/모드' 등의 상태를 함께 남겨야 재현성이 올라갑니다.")
+        if ERROR_COL in df.columns:
+            miss = _to_num(df[ERROR_COL]).isna()
+            mdf = pd.DataFrame({MASK_RATIO_COL: ratio, "missing": miss}).dropna(subset=[MASK_RATIO_COL])
+            mdf["ratio_bin"] = pd.cut(mdf[MASK_RATIO_COL], bins=[0, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 1.0], include_lowest=True)
+            ms = mdf.groupby("ratio_bin", dropna=False)["missing"].agg(frames="size", missing="sum").reset_index()
+            ms["missing_%"] = (ms["missing"] / ms["frames"] * 100.0).round(2)
+            st.altair_chart(
+                alt.Chart(ms.dropna(subset=["ratio_bin"]))
+                .mark_bar()
+                .encode(
+                    x=alt.X("ratio_bin:N", sort=None, title="Mask Ratio bin"),
+                    y=alt.Y("missing_%:Q", scale=alt.Scale(domain=[0, 100]), title="Lane Error missing (%)"),
+                    tooltip=["ratio_bin:N", "frames:Q", "missing:Q", "missing_%:Q"],
                 )
-            st.markdown("- 권장: (a) NA 사유 코드(미검출/부분검출/모드/센서) 추가, (b) 같은 프레임에서 ratio/후보 태그/환경 함께 저장")
+                .properties(height=300, title="Mask Ratio 구간별 Lane Error 결측률(요약)"),
+                use_container_width=True,
+            )
+        st.markdown("- 권장: (a) NA 사유 코드(미검출/부분검출/모드/센서) 추가, (b) 같은 프레임에서 ratio/후보 태그/환경 함께 저장")
 
     # 5) Processing time spikes
     if (proc_tail_rate is not None) and (proc_tail_th is not None) and (proc_tail_rate >= 5.0):
-        with st.expander("5) 처리시간 튐 감소 (Proc Time tail)"):
-            st.markdown(
-                f"- Processing Time ≥ **{proc_tail_th:.1f} ms** (상위 {100 - pctl}% 꼬리) 구간이 **{proc_tail_rate:.2f}%** 입니다. "
-                "프레임 드랍/조향 지연에 직접 영향 가능성이 있습니다."
-            )
-            _hist_with_rules(proc, PROC_COL, "Processing Time 분포(꼬리 확인)", rules=[(proc_tail_th, "tail_th")], height=260)
-            scat2 = pd.DataFrame({MASK_RATIO_COL: ratio, PROC_COL: proc}).dropna()
-            if not scat2.empty:
-                scat2["is_tail"] = scat2[PROC_COL].ge(proc_tail_th)
-                st.altair_chart(
-                    alt.Chart(scat2)
-                    .mark_point(filled=True, opacity=0.55)
-                    .encode(
-                        x=alt.X(f"{MASK_RATIO_COL}:Q", scale=alt.Scale(domain=[0, 1])),
-                        y=alt.Y(f"{PROC_COL}:Q", title="Processing Time (ms)"),
-                        shape=alt.Shape("is_tail:N", title="Proc tail"),
-                        tooltip=[alt.Tooltip(MASK_RATIO_COL, format=".4f"), alt.Tooltip(PROC_COL, format=".1f")],
-                    )
-                    .properties(height=320, title="Mask Ratio ↔ Processing Time (tail 프레임 표시)"),
-                    use_container_width=True,
+        st.markdown(
+            f"- Processing Time ≥ **{proc_tail_th:.1f} ms** (상위 {100 - pctl}% 꼬리) 구간이 **{proc_tail_rate:.2f}%** 입니다. "
+            "프레임 드랍/조향 지연에 직접 영향 가능성이 있습니다."
+        )
+        _hist_with_rules(proc, PROC_COL, "Processing Time 분포(꼬리 확인)", rules=[(proc_tail_th, "tail_th")], height=260)
+        scat2 = pd.DataFrame({MASK_RATIO_COL: ratio, PROC_COL: proc}).dropna()
+        if not scat2.empty:
+            scat2["is_tail"] = scat2[PROC_COL].ge(proc_tail_th)
+            st.altair_chart(
+                alt.Chart(scat2)
+                .mark_point(filled=True, opacity=0.55)
+                .encode(
+                    x=alt.X(f"{MASK_RATIO_COL}:Q", scale=alt.Scale(domain=[0, 1])),
+                    y=alt.Y(f"{PROC_COL}:Q", title="Processing Time (ms)"),
+                    shape=alt.Shape("is_tail:N", title="Proc tail"),
+                    tooltip=[alt.Tooltip(MASK_RATIO_COL, format=".4f"), alt.Tooltip(PROC_COL, format=".1f")],
                 )
-            st.markdown("- 권장: (a) 단계별 시간측정으로 병목 찾기, (b) 해상도/ROI 축소, (c) 모델/후처리 경량화(정수화/프루닝 등) 검토")
+                .properties(height=320, title="Mask Ratio ↔ Processing Time (tail 프레임 표시)"),
+                use_container_width=True,
+            )
+        st.markdown("- 권장: (a) 단계별 시간측정으로 병목 찾기, (b) 해상도/ROI 축소, (c) 모델/후처리 경량화(정수화/프루닝 등) 검토")
 
     # Fallback when nothing triggered
     if (low_rate is None) and (high_rate is None) and (abs_tail_rate is None) and (err_missing_rate is None) and (proc_tail_rate is None):

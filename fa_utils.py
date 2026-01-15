@@ -1,7 +1,7 @@
-"""Shared utilities for failure_analysis Streamlit pages.
+"""실패 분석 Streamlit 페이지들을 위한 공유 유틸리티
 
-- Keeps schema/cleaning logic consistent across main + date-specific pages
-- Avoids module-level data processing (safe to import)
+- 메인 페이지와 날짜별 페이지 간 스키마/정제 로직 일관성 유지
+- 모듈 레벨 데이터 처리 방지 (안전한 import)
 """
 
 from __future__ import annotations
@@ -13,32 +13,32 @@ import streamlit as st
 import altair as alt
 
 # -------------------------------------------------------------------------
-# Streamlit page config (safe when imported by a parent Streamlit app)
+# Streamlit 페이지 설정 (부모 Streamlit 앱에서 import 시 안전)
 _PAGE_CONFIG = dict(page_title="실패분석", page_icon="🛣️", layout="wide")
 
 def _maybe_set_page_config() -> None:
-    """Call set_page_config if possible; ignore if already set by parent app."""
+    """가능하면 set_page_config를 호출하되, 이미 부모 앱에서 설정된 경우 무시"""
     try:
         st.set_page_config(**_PAGE_CONFIG)
     except Exception:
-        # Streamlit raises if page config is already set or called too late.
+        # Streamlit은 페이지 설정이 이미 설정되었거나 너무 늦게 호출되면 예외를 발생시킴
         pass
 
 
 # -------------------------------------------------------------------------
-# Canonical columns (FIXED SCHEMA)
+# 표준 컬럼 (고정 스키마)
 
-TS_COL = "Timestamp"                   # optional (ms or ISO string)
+TS_COL = "Timestamp"                   # 선택 (ms 또는 ISO 문자열)
 QUALITY_COL = "Lane Quality Score"     # 0~100
-MASK_RATIO_COL = "Mask White Ratio"    # 0~1 (white pixels / mask pixels)
+MASK_RATIO_COL = "Mask White Ratio"    # 0~1 (흰 픽셀 / 마스크 픽셀)
 
-ERROR_COL = "Lane Error"               # signed
+ERROR_COL = "Lane Error"               # 부호 있음
 ABS_ERROR_COL = "Abs Lane Error"
 
-PROC_COL = "Processing Time (ms)"      # optional
-WEATHER_COL = "Weather"                # optional
-TOD_COL = "Time of Day"                # optional
-MODE_COL = "Mode"                      # optional
+PROC_COL = "Processing Time (ms)"      # 선택
+WEATHER_COL = "Weather"                # 선택
+TOD_COL = "Time of Day"                # 선택
+MODE_COL = "Mode"                      # 선택
 
 # Fixed schema (업로드 로그는 아래 8개 컬럼명을 '그대로' 사용한다고 가정)
 FIXED_LOG_COLS = [
@@ -52,17 +52,17 @@ FIXED_LOG_COLS = [
     MODE_COL,
 ]
 
-# Synthetic IDs (created at load/merge time)
+# 합성 ID (로드/병합 시 생성)
 RUN_ID_COL = "Run ID"
 ROW_IN_RUN_COL = "Row In Run"
 EVENT_ID_COL = "Event ID"
 
 
 # -------------------------------------------------------------------------
-# Core cleaning / ids
+# 핵심 정제 / ID 생성
 
 def _select_fixed_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Select fixed columns in a stable order and fail fast if any are missing."""
+    """고정 컬럼을 안정적인 순서로 선택하고, 누락된 컬럼이 있으면 즉시 실패"""
     missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
     if missing:
         raise ValueError(f"필수 컬럼 누락: {', '.join(missing)}")
@@ -70,20 +70,20 @@ def _select_fixed_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _coerce_and_fill(df: pd.DataFrame) -> pd.DataFrame:
-    """Minimal dtype normalization used by all pages (non-breaking)."""
+    """모든 페이지에서 사용하는 최소한의 데이터 타입 정규화 (비파괴적)"""
     d = df.copy()
 
-    # Timestamp
+    # 타임스탬프
     if TS_COL in d.columns:
         d[TS_COL] = pd.to_numeric(d[TS_COL], errors="coerce")
 
-    # Numeric fields
+    # 숫자 필드
     if ERROR_COL in d.columns:
         d[ERROR_COL] = pd.to_numeric(d[ERROR_COL], errors="coerce")
     if PROC_COL in d.columns:
         d[PROC_COL] = pd.to_numeric(d[PROC_COL], errors="coerce")
 
-    # Text fields
+    # 텍스트 필드
     for c in [WEATHER_COL, TOD_COL, MODE_COL]:
         if c in d.columns:
             d[c] = d[c].astype("string").fillna("Unknown")
@@ -92,7 +92,7 @@ def _coerce_and_fill(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure key derived columns exist and normalize core ranges."""
+    """주요 파생 컬럼이 존재하는지 확인하고 핵심 범위를 정규화"""
     d = _coerce_and_fill(df)
 
     if QUALITY_COL in d.columns:
@@ -109,7 +109,7 @@ def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
         e = pd.to_numeric(d[ERROR_COL], errors="coerce")
         d[ABS_ERROR_COL] = e.abs()
 
-    # Optional defaults (keep compatibility with older CSVs)
+    # 선택적 기본값 (이전 CSV와의 호환성 유지)
     if WEATHER_COL not in d.columns:
         d[WEATHER_COL] = "Unknown"
     if TOD_COL not in d.columns:
@@ -129,12 +129,12 @@ def _add_event_ids_per_run(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
 
 
 def _make_tooltip(df: pd.DataFrame, wanted: list[str]) -> list[str]:
-    """Return tooltip columns that actually exist in df (keeps order)."""
+    """df에 실제로 존재하는 툴팁 컬럼 반환 (순서 유지)"""
     return [c for c in wanted if c in df.columns]
 
 
 # -------------------------------------------------------------------------
-# Diagnostics / stats helpers
+# 진단 / 통계 헬퍼
 
 def _describe_missing(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     rows = []
@@ -198,10 +198,10 @@ def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: i
 
 
 # -------------------------------------------------------------------------
-# Fixed CSV loading (used by date pages)
+# 고정 CSV 로딩 (날짜별 페이지에서 사용)
 
 def _find_csv_file(filename: str, base_dir: Path | None = None) -> Path:
-    """Search common locations for a fixed CSV file and return the first existing path."""
+    """고정 CSV 파일의 일반적인 위치를 검색하고 첫 번째로 발견된 경로 반환"""
     base_dir = base_dir or Path.cwd()
     candidates: list[Path] = [
         Path("data") / filename,
@@ -219,7 +219,7 @@ def _find_csv_file(filename: str, base_dir: Path | None = None) -> Path:
 
 
 def load_fixed_csv(filename: str, *, run_id: str, base_dir: Path | None = None) -> pd.DataFrame:
-    """Load + normalize a fixed-schema CSV and add synthetic IDs."""
+    """고정 스키마 CSV를 로드하고 정규화한 뒤 합성 ID 추가"""
     p = _find_csv_file(filename, base_dir=base_dir)
     d = pd.read_csv(p)
     d = _select_fixed_columns(d)
@@ -229,7 +229,7 @@ def load_fixed_csv(filename: str, *, run_id: str, base_dir: Path | None = None) 
 
 
 def try_load_fixed_csv(filename: str, *, run_id: str, base_dir: Path | None = None) -> pd.DataFrame:
-    """Like load_fixed_csv, but returns an empty DataFrame if file is missing."""
+    """load_fixed_csv와 유사하지만, 파일이 없으면 빈 DataFrame 반환"""
     try:
         return load_fixed_csv(filename, run_id=run_id, base_dir=base_dir)
     except FileNotFoundError:

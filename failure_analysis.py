@@ -5,152 +5,25 @@ import numpy as np
 from pathlib import Path
 import re
 
+from fa_utils import (
+    TS_COL, QUALITY_COL, MASK_RATIO_COL, ERROR_COL, ABS_ERROR_COL,
+    PROC_COL, WEATHER_COL, TOD_COL, MODE_COL,
+    FIXED_LOG_COLS,
+    RUN_ID_COL, ROW_IN_RUN_COL, EVENT_ID_COL,
+    _select_fixed_columns,
+    _ensure_fields,
+    _make_tooltip,
+    _add_event_ids_per_run,
+    _describe_missing,
+    perform_linear_regression,
+    draw_histogram,
+)
+
 st.set_page_config(page_title="실패분석", page_icon="🛣️", layout="wide")
 
-# =============================================================================
-# Canonical columns (you can rename your CSV columns to match, or rely on auto-rename)
-
-TS_COL = "Timestamp"                   # optional (ms or ISO string)
-
-QUALITY_COL = "Lane Quality Score"     # 0~100 (higher is better)  [OPTIONAL] (현재 logger 구현에서는 ratio의 스케일링일 수 있음)
-MASK_RATIO_COL = "Mask White Ratio"    # 0~1 (white pixels / mask pixels) [REQUIRED]
-
-ERROR_COL = "Lane Error"               # signed (e.g., pixels)
-ABS_ERROR_COL = "Abs Lane Error"
-
-PROC_COL = "Processing Time (ms)"      # optional
-WEATHER_COL = "Weather"                # optional
-TOD_COL = "Time of Day"                # optional
-MODE_COL = "Mode"                    # optional (e.g., auto/manual)
-
-
-
-# Fixed schema (업로드 로그는 아래 8개 컬럼명을 '그대로' 사용한다고 가정)
-FIXED_LOG_COLS = [
-    TS_COL,
-    WEATHER_COL,
-    TOD_COL,
-    MASK_RATIO_COL,
-    QUALITY_COL,
-    ERROR_COL,
-    PROC_COL,
-    MODE_COL,
-]
-
-def _select_fixed_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Select fixed columns in a stable order and fail fast if any are missing."""
-    missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
-    if missing:
-        raise ValueError(f"필수 컬럼 누락: {', '.join(missing)}")
-    return df[FIXED_LOG_COLS].copy()
-
-# Synthetic IDs (created at load/merge time)
-RUN_ID_COL = "Run ID"
-ROW_IN_RUN_COL = "Row In Run"
-EVENT_ID_COL = "Event ID"
-
-# =============================================================================
-# Helpers
-
-def _ensure_fields(df: pd.DataFrame) -> pd.DataFrame:
-    if QUALITY_COL in df.columns:
-        q = pd.to_numeric(df[QUALITY_COL], errors="coerce") # 수치형 데이터로 변환, 불가능 시 NaN 값 반환
-        df[QUALITY_COL] = q.clip(0, 100)
-
-    if MASK_RATIO_COL in df.columns:
-        r = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce")
-        df[MASK_RATIO_COL] = np.where(r > 1.5, r / 100.0, r)
-        df[MASK_RATIO_COL] = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce").clip(0, 1)
-
-    if ERROR_COL in df.columns and ABS_ERROR_COL not in df.columns:
-        e = pd.to_numeric(df[ERROR_COL], errors="coerce")
-        df[ABS_ERROR_COL] = e.abs()
-
-    # Optional defaults
-    if WEATHER_COL not in df.columns:
-        df[WEATHER_COL] = "Unknown"
-    if TOD_COL not in df.columns:
-        df[TOD_COL] = "Unknown"
-
-    return df
-
-
-def _make_tooltip(df: pd.DataFrame, wanted: list[str]) -> list[str]:
-    """Return tooltip columns that actually exist in df (keeps order)."""
-    return [c for c in wanted if c in df.columns]
-
-
-def _add_event_ids_per_run(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
-    d = df.copy()
-    d[RUN_ID_COL] = run_id
-    d[ROW_IN_RUN_COL] = np.arange(len(d), dtype=int)
-    d[EVENT_ID_COL] = d[RUN_ID_COL].astype(str) + "_" + d[ROW_IN_RUN_COL].astype(str).str.zfill(6)
-    return d
-
-
-def _describe_missing(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    rows = []
-    for c in cols:
-        if c not in df.columns:
-            rows.append({"column": c, "present": False, "missing_rate": 1.0, "dtype": "N/A"})
-        else:
-            miss = df[c].isnull().mean()
-            rows.append({"column": c, "present": True, "missing_rate": float(miss), "dtype": str(df[c].dtype)})
-    
-    res = pd.DataFrame(rows)
-    if not res.empty:
-        res["missing_%"] = (res["missing_rate"] * 100).round(2)
-        res = res.drop(columns=["missing_rate"])
-    return res
-
-
-def perform_linear_regression(df: pd.DataFrame, x_col: str, y_col: str, sigma_threshold: float) -> pd.DataFrame:
-    clean_df = df.dropna(subset=[x_col, y_col]).copy()
-    if clean_df.empty:
-        clean_df["Status"] = "In Range"
-        return clean_df
-
-    x = clean_df[x_col].to_numpy()
-    y = clean_df[y_col].to_numpy()
-
-    slope, intercept = np.polyfit(x, y, 1)
-    predictions = (slope * x) + intercept
-    residuals = y - predictions
-    std_dev = float(np.std(residuals)) if len(residuals) else 0.0
-
-    upper_bound = predictions + (sigma_threshold * std_dev)
-    lower_bound = predictions - (sigma_threshold * std_dev)
-
-    clean_df["Predicted"] = predictions
-    clean_df["Upper Bound"] = upper_bound
-    clean_df["Lower Bound"] = lower_bound
-    clean_df["Status"] = np.where(
-        (clean_df[y_col] > upper_bound) | (clean_df[y_col] < lower_bound),
-        "Outlier",
-        "In Range"
-    )
-    return clean_df
-
-
-def draw_histogram(df: pd.DataFrame, metric_name: str, bins: int = 20, height: int = 220):
-    clean_df = df.dropna(subset=[metric_name])
-    if clean_df.empty:
-        st.info(f"No data for {metric_name}")
-        return
-    st.altair_chart(
-        alt.Chart(clean_df, height=height)
-        .mark_bar(binSpacing=0)
-        .encode(
-            alt.X(metric_name, type="quantitative").bin(maxbins=bins),
-            alt.Y("count()").axis(None),
-        ),
-        use_container_width=True,
-    )
-
-
-# Timestamp 기반 이상치 구간 시각화
 
 def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=None) -> None:
+    """Timestamp 기반 이상치 구간 시각화"""
 
     ts_num = pd.to_numeric(df_flags[TS_COL], errors="coerce")
 
@@ -184,7 +57,7 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
         return g, f"bins={n_bins}"
 
     def _plot_one(flag_col_needed, flag_expr, metric_title: str) -> None:
-        # flag_expr: dfv -> boolean Series
+        # flag_expr: dfv -> boolean Series (dfv를 boolean Series로 변환)
         for c in flag_col_needed:
             if c not in dfv.columns:
                 st.info(f"{metric_title}: 필요한 플래그({c})가 없어 시각화를 생략합니다.")
@@ -220,12 +93,11 @@ def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=No
         else:
             top5["구간"] = top5["ts"].astype(str)
 
-        with st.expander(f"{metric_title} 이상치(후보) 구간 Top 5", expanded=False):
-            cap = f"집계 단위: {freq_txt}"
-            if pctl is not None:
-                cap += f" / 민감도(pctl): {pctl}"
-            st.caption(cap)
-            st.dataframe(top5[["구간", "frames", "outliers"]], hide_index=True, use_container_width=True)
+        cap = f"집계 단위: {freq_txt}"
+        if pctl is not None:
+            cap += f" / 민감도(pctl): {pctl}"
+        st.caption(cap)
+        st.dataframe(top5[["구간", "frames", "outliers"]], hide_index=True, use_container_width=True)
 
     _plot_one(
         ["mask_low", "mask_high"],
@@ -305,22 +177,21 @@ else:
         weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
         tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
 
-        # Mask ratio 0~1 (very low when lane is barely visible; can be noisy high in glare)
-        base_ratio = np.random.beta(3, 25, n)  # mostly small ratios
+        # 마스크 비율 0~1 (차선이 거의 보이지 않을 때 매우 낮음; 눈부심에서 노이즈로 높을 수 있음)
+        base_ratio = np.random.beta(3, 25, n)  # 대부분 작은 비율
         base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
         base_ratio[tod == "Night"] *= 0.8
         mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
 
-        # Quality 0~100: not identical to ratio (so you can see divergence cases)
+        # 품질 0~100: 비율과 동일하지 않음 (분기 케이스를 볼 수 있도록)
         quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
-        # inject false positives (ratio high but quality low)
+        # 거짓 양성 주입 (비율은 높지만 품질은 낮음)
         fp = np.random.rand(n) < 0.03
         quality[fp] = np.clip(quality[fp] - 50, 0, 100)
 
-        # Error grows when quality low
+        # 품질이 낮을 때 오차 증가
         abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
         err = abs_err * np.random.choice([-1, 1], n)
-
 
         proc = np.random.normal(28, 5, n)
         mode = np.random.choice(["AUTO", "MANUAL"], n, p=[0.9, 0.1])
@@ -342,8 +213,6 @@ else:
         for f in uploaded_files:
             try:
                 d = pd.read_csv(f)
-
-                # 고정 스키마: 컬럼명은 이미 정해져 있으므로 전처리(리네임/중복 컬럼 병합)는 생략
                 d = _select_fixed_columns(d)
                 d = _ensure_fields(d)
 
@@ -369,7 +238,7 @@ else:
         st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
         st.stop()
 
-# Required checks (고정 스키마 기준)
+# 필수 컬럼 검증
 missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
 if missing:
     st.error(
@@ -380,11 +249,10 @@ if missing:
     )
     st.stop()
 
-# Timestamp is recommended for time-based interpretation
 if TS_COL not in df.columns:
     st.warning("Timestamp 컬럼이 없습니다. 이벤트 식별은 Event ID로 가능하지만, 시간 기반 해석(구간/추세)은 제한될 수 있습니다.")
 
-# Column config
+# 컬럼 설정
 COLUMN_CONFIG = {
     TS_COL: st.column_config.NumberColumn(format='%.0f'),
     QUALITY_COL: st.column_config.ProgressColumn(min_value=0, max_value=100, format="compact", width=130),
@@ -401,18 +269,15 @@ COLUMN_CONFIG = {
 }
 
 def _column_config_for(df_or_cols) -> dict:
-    """Filter COLUMN_CONFIG to only columns that exist (avoids errors when optional cols are missing)."""
+    """COLUMN_CONFIG를 실제로 존재하는 컬럼만 필터링 (선택적 컬럼 누락 시 오류 방지)"""
     cols = df_or_cols.columns if hasattr(df_or_cols, "columns") else list(df_or_cols)
     return {k: v for k, v in COLUMN_CONFIG.items() if k in cols}
 
 # =============================================================================
-# ===============================================
-# Part 0: sanity checks
+# Part 0: 컬럼/결측/커버리지 확인
 
 st.divider()
 st.subheader("Part 0: 컬럼/결측/커버리지 확인")
-
-# 핵심: 이 버전은 Mask White Ratio를 중심으로 보며, Lane Error/Processing Time은 있으면 더 강한 판단이 가능합니다.
 check_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ERROR_COL, PROC_COL, QUALITY_COL]
 st.dataframe(_describe_missing(df, check_cols), hide_index=True, use_container_width=True)
 
@@ -434,7 +299,6 @@ with c3:
         st.metric("Proc Time (median)", "N/A")
 
 
-# ---- Lane Error missingness patterns (data-driven)
 st.markdown("### Lane Error 결측 패턴 분석 (데이터 기반)")
 
 if ERROR_COL not in df.columns:
@@ -458,7 +322,7 @@ else:
     tab_overview, tab_bins, tab_env = st.tabs(["개요", "Mask Ratio 구간", "환경"])
 
     with tab_overview:
-        # Compare mask ratio distributions by missingness
+        # 결측 여부별 마스크 비율 분포 비교
         if MASK_RATIO_COL in df.columns:
             tmp = df[[MASK_RATIO_COL]].copy()
             tmp[MASK_RATIO_COL] = pd.to_numeric(tmp[MASK_RATIO_COL], errors="coerce").clip(0, 1)
@@ -492,7 +356,7 @@ else:
             st.altair_chart(chart, use_container_width=True)
 
 
-            # Quick quantiles for missing vs present
+            # 결측 vs 존재에 대한 빠른 분위수
             q = (
                 tmp.groupby("Error Recorded")[MASK_RATIO_COL]
                 .quantile([0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99])
@@ -519,7 +383,7 @@ else:
         else:
             edges = [0.0, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 1.0]
 
-        # Threshold highlight (matches earlier analysis style)
+        # 임계값 강조 (이전 분석 스타일과 일치)
         low_th = st.slider("저비율 강조 임계값", min_value=0.0, max_value=0.2, value=0.01, step=0.001)
 
         r = pd.to_numeric(df[MASK_RATIO_COL], errors="coerce").clip(0, 1)
@@ -552,7 +416,7 @@ else:
         )
         st.dataframe(bin_summary, hide_index=True, use_container_width=True)
 
-        # Highlight: missing rate under low_th
+        # 강조: low_th 이하의 결측률
         low_mask = r.le(low_th)
         if low_mask.any():
             st.write(
@@ -628,7 +492,7 @@ else:
         draw_histogram(df, MASK_RATIO_COL)
         draw_histogram(df, ABS_ERROR_COL)
 
-    st.caption("※ Outlier는 단순 회귀 기준(기본 2σ)으로 회귀선 대비 크게 벗어난 프레임을 뜻합니다.")
+    st.caption("※ Outlier는 회귀 기준(2σ)으로 회귀선 대비 크게 벗어난 프레임입니다.")
 
     a, b = st.columns(2)
     with a:
@@ -761,7 +625,7 @@ if analysis_mode == "파일 업로드 (기본)":
             use_container_width=True,
         )
 
-    # Decide whether Part III is meaningful (avoid awkward 'Unknown-only' charts)
+    # Part III가 의미 있는지 결정 (어색한 'Unknown만' 차트 방지)
     group_candidates = []
     for g in [WEATHER_COL, TOD_COL]:
         if g in df.columns:
@@ -789,7 +653,7 @@ if analysis_mode == "파일 업로드 (기본)":
         
         summary = _group_summary(df, group_col, metric_col, include_unknown)
         
-        # If user includes Unknown and it dominates, still keep it—but warn if it's the only group.
+        # 사용자가 Unknown을 포함하고 그것이 지배적이더라도 유지하되, 유일한 그룹이면 경고
         if len(summary) <= 1:
             st.info("선택한 그룹 기준에서 비교 가능한 범주가 1개뿐입니다(대부분 Unknown일 수 있음).")
         _bar_chart(summary, group_col, metric_label, domain=domain)
@@ -828,7 +692,7 @@ pctl = st.slider(
 
 d = df.copy()
 
-# Normalize numeric columns safely
+    # 숫자 컬럼을 안전하게 정규화
 d[MASK_RATIO_COL] = pd.to_numeric(d[MASK_RATIO_COL], errors="coerce").clip(0, 1)
 
 r = d[MASK_RATIO_COL].dropna()
@@ -862,7 +726,7 @@ else:
             proc_th_value = float(pr.quantile(pctl / 100.0))
             proc_high = pr.ge(proc_th_value)
 
-    # candidate tags
+    # 후보 태그
     def _join_tags(row) -> str:
         tags = []
         if row.get("mask_low", False):
@@ -885,7 +749,7 @@ else:
 
     d["Candidate Tags"] = d.apply(_join_tags, axis=1)
 
-    # primary tag (priority)
+    # 주요 태그 (우선순위)
     d["Primary Tag"] = "Normal"
     d.loc[d["mask_low"], "Primary Tag"] = "마스크 비율 매우 낮음"
     d.loc[(d["Primary Tag"] == "Normal") & d["mask_high"], "Primary Tag"] = "마스크 비율 매우 높음"
@@ -895,7 +759,7 @@ else:
 
     cand = d[d["Candidate Tags"].astype(str).str.len() > 0].copy()
 
-    # show thresholds
+    # 임계값 표시
     th_lines = [
         f"- Mask Ratio 하한(하위 {100 - pctl}% 분위): **{low_ratio_th:.4f}**",
         f"- Mask Ratio 상한(상위 {100 - pctl}% 분위): **{high_ratio_th:.4f}**",
@@ -917,7 +781,7 @@ else:
     summary["%"] = (summary["count"] / len(df) * 100).round(2)
     st.dataframe(summary, hide_index=True, use_container_width=True, height=220)
 
-    # Charts (fixed axes, no extra controls)
+    # 차트 (고정 축, 추가 컨트롤 없음)
     tabs = []
     tabs.append("Mask Ratio ↔ Abs Error" if ABS_ERROR_COL in cand.columns else "Mask Ratio ↔ Proc Time")
     if (ABS_ERROR_COL in cand.columns) and (PROC_COL in cand.columns):
@@ -925,7 +789,7 @@ else:
 
     t = st.tabs(tabs)
 
-    # Helper for sampling
+    # 샘플링을 위한 헬퍼
     def _sample_for_plot(x: pd.DataFrame, n: int = 3000) -> pd.DataFrame:
         if len(x) <= n:
             return x
@@ -1026,21 +890,22 @@ st.markdown("## Part VI: Timestamp 기반 이상치 구간")
 st.caption("이상치가 '몰리는 시간 구간'을 찾습니다.")
 _render_timestamp_outlier_windows_from_flags(df_flags=d if 'd' in locals() else df, pctl=pctl if 'pctl' in locals() else None)
 
-# Part VII: Browse
-
+# Part VII: 전체 로그 보기
 st.divider()
 st.markdown("## Part VII: 전체 로그 보기")
-st.dataframe(df.drop(["Run ID", "Row In Run", "Event ID"], axis=1))
+drop_cols = [RUN_ID_COL, ROW_IN_RUN_COL, EVENT_ID_COL]
+st.dataframe(df.drop(columns=[c for c in drop_cols if c in df.columns]))
 
-# Part X
+# =============================================================================
+# Part X: 분석 요약 및 개선점
 
 def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | None" = None) -> dict:
-    """Compute summary metrics for Part X. Returns a dict used for UI and for LLM prompting."""
+    """Part X의 요약 메트릭 계산. UI 및 LLM 프롬프팅에 사용되는 딕셔너리 반환"""
     metrics: dict = {}
     n_total = int(len(df))
     metrics["n_total"] = n_total
 
-    # Mask ratio
+    # 마스크 비율
     ratio = pd.to_numeric(df.get(MASK_RATIO_COL), errors="coerce").clip(0, 1)
     ratio_valid = ratio.dropna()
     metrics["ratio_valid_n"] = int(ratio_valid.size)
@@ -1062,7 +927,7 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
         "ratio_quantiles": ratio_q,
     })
 
-    # Quality score
+    # 품질 점수
     qv = pd.to_numeric(df.get(QUALITY_COL), errors="coerce")
     qv_valid = qv.dropna()
     quality_q = {}
@@ -1072,7 +937,7 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
     metrics["quality_quantiles"] = quality_q
     metrics["quality_valid_n"] = int(qv_valid.size)
 
-    # Error
+    # 오차
     err_missing_rate = abs_p95 = abs_p99 = abs_tail_th = abs_tail_rate = None
     if ERROR_COL in df.columns:
         err = pd.to_numeric(df.get(ERROR_COL), errors="coerce")
@@ -1091,7 +956,7 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
         "abs_tail_rate": abs_tail_rate,
     })
 
-    # Processing time
+    # 처리 시간
     proc_p95 = proc_p99 = proc_max = proc_tail_th = proc_tail_rate = None
     if PROC_COL in df.columns:
         pr = pd.to_numeric(df.get(PROC_COL), errors="coerce").dropna()
@@ -1109,7 +974,7 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
         "proc_tail_rate": proc_tail_rate,
     })
 
-    # Candidate tag distribution (if available)
+    # 후보 태그 분포 (사용 가능한 경우)
     tag_counts = None
     if cand is not None and isinstance(cand, pd.DataFrame) and len(cand) > 0 and "Primary Tag" in cand.columns:
         vc = cand["Primary Tag"].astype(str).value_counts()
@@ -1121,14 +986,14 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
 
 
 def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | None" = None) -> dict:
-    """Render distribution summary UI for Part X. Returns computed metrics dict."""
+    """Part X의 분포 요약 UI 렌더링. 계산된 메트릭 딕셔너리 반환"""
     st.divider()
     st.markdown("## Part X: 분석 요약 및 개선점 (분포 기반)")
 
     metrics = _compute_partx_metrics(df, pctl, cand=cand)
     n_total = metrics["n_total"]
 
-    # ---- Summary table (similar style to 0109 Part X)
+    # 요약 테이블 (0109 Part X와 유사한 스타일)
     st.markdown("### 분포 요약(핵심 지표)")
     rows = [{"항목": "총 프레임 수", "값": f"{n_total:,}", "의미": "분석 대상 전체 행 수"}]
 
@@ -1154,23 +1019,22 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # Quantiles tables (optional, but helpful)
-    with st.expander("상세 분위수 보기(마스크/퀄리티)", expanded=False):
-        qrows = []
-        rq = metrics.get("ratio_quantiles") or {}
-        if rq:
-            for k in ["p01","p05","p10","p25","p50","p75","p90","p95","p99"]:
-                if k in rq:
-                    qrows.append({"지표": "Mask White Ratio", "분위": k, "값": f"{rq[k]:.4f}"})
-        qq = metrics.get("quality_quantiles") or {}
-        if qq:
-            for k in ["p01","p05","p10","p25","p50","p75","p90","p95","p99"]:
-                if k in qq:
-                    qrows.append({"지표": "Lane Quality Score", "분위": k, "값": f"{qq[k]:.2f}"})
-        if qrows:
-            st.dataframe(pd.DataFrame(qrows), use_container_width=True, hide_index=True)
-        else:
-            st.info("분위수 계산에 필요한 컬럼이 부족합니다.")
+    # 분위수 테이블 (선택적이지만 유용함)
+    qrows = []
+    rq = metrics.get("ratio_quantiles") or {}
+    if rq:
+        for k in ["p01","p05","p10","p25","p50","p75","p90","p95","p99"]:
+            if k in rq:
+                qrows.append({"지표": "Mask White Ratio", "분위": k, "값": f"{rq[k]:.4f}"})
+    qq = metrics.get("quality_quantiles") or {}
+    if qq:
+        for k in ["p01","p05","p10","p25","p50","p75","p90","p95","p99"]:
+            if k in qq:
+                qrows.append({"지표": "Lane Quality Score", "분위": k, "값": f"{qq[k]:.2f}"})
+    if qrows:
+        st.dataframe(pd.DataFrame(qrows), use_container_width=True, hide_index=True)
+    else:
+        st.info("분위수 계산에 필요한 컬럼이 부족합니다.")
 
     # Candidate tag mix
     st.markdown("### 후보(이상 구간) 분포 요약")
@@ -1178,7 +1042,7 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
         tag_counts = metrics["candidate_tag_counts"]
         total_cand = metrics.get("candidate_n") or 0
         lines = [f"- 전체 후보 수: **{total_cand:,}** / 전체 대비 **{(total_cand / n_total * 100.0 if n_total else 0):.2f}%**"]
-        # show top 6
+        # 상위 6개 표시
         for k, v in list(tag_counts.items())[:6]:
             lines.append(f"- {k}: {v:,}건 (전체 대비 {(v / n_total * 100.0):.2f}%, 후보 내 {(v / total_cand * 100.0 if total_cand else 0):.2f}%)")
         st.markdown("\n".join(lines))
@@ -1354,7 +1218,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
 
 
 def _format_llm_recos_markdown(llm: dict | None) -> str:
-    """Render LLM JSON result into compact Markdown (copy/edit friendly)."""
+    """LLM JSON 결과를 간결한 Markdown으로 렌더링 (복사/편집 용이)"""
     llm = llm or {}
     overview = str(llm.get("overview") or "").strip()
     assumptions = llm.get("assumptions") or []
@@ -1420,7 +1284,7 @@ def _format_llm_recos_markdown(llm: dict | None) -> str:
 
 
 def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
-    """Build a copy/edit-friendly markdown report for Part X."""
+    """Part X를 위한 복사/편집 용이한 Markdown 보고서 생성"""
     llm_md = _format_llm_recos_markdown(llm)
 
     n_total = metrics.get("n_total")
@@ -1519,7 +1383,7 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
 
     lines.append("## 3) 개선사항(자동 생성/수정 가능)")
     if llm_md:
-        # OpenAI output is already markdown. Put it as-is.
+        # OpenAI 출력은 이미 markdown 형식. 그대로 사용
         lines.append(llm_md)
     else:
         lines.append("- (아직 생성된 개선사항이 없습니다. Part X에서 버튼을 눌러 생성한 뒤, 여기서 문구를 수정하세요.)")
@@ -1568,7 +1432,7 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
     st.markdown("### 보고서(복사/수정용)")
     st.caption("아래 텍스트는 수정 가능한 보고서 초안입니다. 필요에 맞게 문장을 편집한 뒤 복사하세요.")
 
-    # Initialize report text once (preserve user edits across reruns)
+    # 보고서 텍스트를 한 번 초기화 (rerun 간 사용자 편집 보존)
     if "partx_report_text" not in st.session_state:
         st.session_state["partx_report_text"] = _build_partx_report(
             metrics, pctl=pctl, llm=st.session_state.get("partx_openai_json")
@@ -1589,8 +1453,8 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
     )
 
 
-# Call Part X at the end (after Part VI)
+# Part X 실행
 try:
     _render_part_x_openai(df, pctl, cand=cand)
-except Exception as _e:
-    st.warning(f"Part X를 표시하는 중 문제가 발생했습니다: {_e}")
+except Exception as e:
+    st.warning(f"Part X를 표시하는 중 문제가 발생했습니다: {e}")
