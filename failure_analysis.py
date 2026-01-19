@@ -945,6 +945,7 @@ _st_dataframe(df.drop(columns=[c for c in drop_cols if c in df.columns]))
 # =============================================================================
 # Part X: 분석 요약 및 개선점
 
+# 분포 기반 요약 지표를 한번에 계산해 metrics 딕셔너리로 반환
 def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | None" = None) -> dict:
     """Part X의 요약 메트릭 계산. UI 및 LLM 프롬프팅에 사용되는 딕셔너리 반환"""
     metrics: dict = {}
@@ -973,7 +974,7 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
         "ratio_quantiles": ratio_q,
     })
 
-    # LLM/보고서용 scalar 분위수(토큰/근거 일치 목적)
+    # LLM/보고서용 scalar 분위수
     metrics["ratio_p05"] = ratio_q.get("p05")
     metrics["ratio_p50"] = ratio_q.get("p50")
     metrics["ratio_p95"] = ratio_q.get("p95")
@@ -1120,7 +1121,7 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
     metrics = _compute_partx_metrics(df, pctl, cand=cand)
     n_total = metrics["n_total"]
 
-    # 요약 테이블 (0109 Part X와 유사한 스타일)
+    # 요약 테이블
     st.markdown("### 분포 요약(핵심 지표)")
     rows = [{"항목": "총 프레임 수", "값": f"{n_total:,}", "의미": "분석 대상 전체 행 수"}]
 
@@ -1146,7 +1147,7 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
 
     _st_dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # 분위수 테이블 (선택적이지만 유용함)
+    # 분위수 테이블
     qrows = []
     rq = metrics.get("ratio_quantiles") or {}
     if rq:
@@ -1204,7 +1205,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
     except Exception as e:
         raise RuntimeError(f"openai 패키지 import 실패: {e}")
 
-    # --- API key
+    # API 키 호출
     api_key = None
     if hasattr(st, "secrets"):
         api_key = st.secrets.get("OPENAI_API_KEY") or st.secrets.get("openai_api_key")
@@ -1214,30 +1215,23 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
 
     client = OpenAI(api_key=api_key)
 
-    # --- model & generation controls (fixed defaults; not user-configurable)
+    # 모델 설정
     model = "gpt-4o-mini"
     max_out = 700
     temperature = 0.2
 
-    # --- make metrics JSON-safe & compact
     def _to_jsonable(x):
-        try:
-            import numpy as _np
-            import pandas as _pd
-        except Exception:
-            _np = None
-            _pd = None
 
         if x is None:
             return None
-        if _pd is not None and hasattr(_pd, "isna"):
+        if pd is not None and hasattr(pd, "isna"):
             try:
-                if _pd.isna(x):
+                if pd.isna(x):
                     return None
             except Exception:
                 pass
-        if _np is not None:
-            if isinstance(x, (_np.integer, _np.floating, _np.bool_)):
+        if np is not None:
+            if isinstance(x, (np.integer, np.floating, np.bool_)):
                 return x.item()
         if isinstance(x, (int, float, bool, str)):
             return x
@@ -1250,7 +1244,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
     safe_metrics = _to_jsonable(metrics)
 
     def _drop_nulls(x):
-        # None / 빈 dict / 빈 list 제거 (토큰 절약)
+        # None / 빈 dict / 빈 list 제거
         if x is None:
             return None
         if isinstance(x, dict):
@@ -1387,10 +1381,6 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
         "recommendations": [],
         "notes": raw[:480],
     }
-
-
-
-
 
 def _format_llm_recos_markdown(llm: dict | None) -> str:
     """LLM JSON 결과를 간결한 Markdown으로 렌더링 (복사/편집 용이)"""
@@ -1567,10 +1557,12 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
     return "\n".join(lines).strip() + "\n"
 
 def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | None" = None) -> None:
+    
+    # 분포 기반 요약 지표를 한번에 계산해 metrics 딕셔너리로 반환
     metrics = _render_part_x_distribution(df, pctl, cand=cand)
 
     st.markdown("### 개선사항(OpenAI 자동 생성)")
-    st.caption("버튼을 누르면 위 분포 요약을 근거로 개선사항을 생성합니다.")
+    st.caption("버튼을 누르면 위 분포 요약을 근거로 개선사항을 생성")
 
 
     col_a, col_b = st.columns([1, 1])
