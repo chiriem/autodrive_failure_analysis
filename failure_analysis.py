@@ -217,6 +217,8 @@ else:
 
     use_demo = st.toggle("데모 데이터 사용", value=(not uploaded_files))
 
+    st.subheader("이 페이지는 https://github.com/chiriem/autodrive_failure_analysis/tree/main/data 의 0115_12_log.csv를 업로드하는 것을 기준으로 제작되었습니다.")
+
     def _generate_demo(n: int = 1200) -> pd.DataFrame:
         np.random.seed(7)
 
