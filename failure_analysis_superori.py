@@ -973,11 +973,15 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
         "ratio_quantiles": ratio_q,
     })
 
-    # LLM/보고서용 scalar 분위수(토큰/근거 일치 목적)
-    metrics["ratio_p05"] = ratio_q.get("p05")
-    metrics["ratio_p50"] = ratio_q.get("p50")
-    metrics["ratio_p95"] = ratio_q.get("p95")
-    metrics["ratio_p99"] = ratio_q.get("p99")
+    # 품질 점수
+    qv = pd.to_numeric(df.get(QUALITY_COL), errors="coerce")
+    qv_valid = qv.dropna()
+    quality_q = {}
+    if not qv_valid.empty:
+        for q in [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]:
+            quality_q[f"p{int(q*100):02d}"] = float(qv_valid.quantile(q))
+    metrics["quality_quantiles"] = quality_q
+    metrics["quality_valid_n"] = int(qv_valid.size)
 
     # 오차
     err_missing_rate = abs_p95 = abs_p99 = abs_tail_th = abs_tail_rate = None
@@ -1024,79 +1028,102 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
     metrics["candidate_tag_counts"] = tag_counts
     metrics["candidate_n"] = int(len(cand)) if isinstance(cand, pd.DataFrame) else None
 
+    
     # ---------------------------------------------------------------------
-    # Failure-related metrics (Failure Flag == 1 only)
+    # Failure-related metrics (uses optional log columns when present)
+    # NOTE: This block is designed to be backward-compatible (silently skips if columns missing).
+    err_num = (
+        pd.to_numeric(df.get(ERROR_COL), errors="coerce")
+        if ERROR_COL in df.columns
+        else pd.Series([pd.NA] * n_total, index=df.index)
+    )
+
+    # presence flags (helps LLM avoid hallucinating missing columns)
+    metrics["has_failure_flag_col"] = bool(FAIL_FLAG_COL in df.columns)
+    metrics["has_failure_type_col"] = bool(FAIL_TYPE_COL in df.columns)
+    metrics["has_lane_state_col"] = bool("Lane State" in df.columns)
+    metrics["has_target_cx_col"] = bool("Target CX" in df.columns)
+    metrics["has_contours_cols"] = bool(("Contours Total" in df.columns) and ("Contours Kept" in df.columns))
+    metrics["has_direction_force_col"] = bool("Direction Force" in df.columns)
+
+    # Non-null counts for optional cols (debug-friendly)
+    opt_cols = [FAIL_FLAG_COL, FAIL_TYPE_COL, "Lane State", "Target CX", "Contours Total", "Contours Kept", "Direction Force"]
+    metrics["optional_nonnull_counts"] = {c: int(df[c].notna().sum()) for c in opt_cols if c in df.columns}
+
+    # Conservative fixed failure flag (analysis standard)
+    if FAIL_FLAG_FIXED_COL in df.columns:
+        ff_fixed = pd.to_numeric(df[FAIL_FLAG_FIXED_COL], errors="coerce").fillna(0).astype(int)
+    else:
+        _raw_flag_src = df[FAIL_FLAG_COL] if FAIL_FLAG_COL in df.columns else pd.Series([0] * n_total, index=df.index)
+        raw_flag = pd.to_numeric(_raw_flag_src, errors="coerce").fillna(0).astype(int)
+        ff_fixed = ((raw_flag == 1) | (err_num.isna())).astype(int)
+
+    metrics["failure_definition"] = "(Failure Flag==1) OR (Lane Error is NA)"
+    metrics["failure_n_fixed"] = int(ff_fixed.sum())
+    metrics["failure_rate_fixed"] = float(ff_fixed.mean() * 100.0) if n_total else None
+
+    # Mismatch diagnostics (useful when drive logger has inconsistencies)
     if FAIL_FLAG_COL in df.columns:
-        raw_flag = pd.to_numeric(df[FAIL_FLAG_COL], errors="coerce").fillna(0).astype(int)
-        fail_mask = (raw_flag == 1)
-        failure_n = int(fail_mask.sum())
+        _raw_flag_src = df[FAIL_FLAG_COL]
+        raw_flag = pd.to_numeric(_raw_flag_src, errors="coerce").fillna(0).astype(int)
+        raw_is_fail = (raw_flag == 1)
+        metrics["mismatch_na_error_flag0_n"] = int((err_num.isna() & ~raw_is_fail).sum())
+        metrics["mismatch_ok_error_flag1_n"] = int((~err_num.isna() & raw_is_fail).sum())
+    else:
+        metrics["mismatch_na_error_flag0_n"] = None
+        metrics["mismatch_ok_error_flag1_n"] = None
 
-        metrics["failure_definition"] = "Failure Flag==1"
-        metrics["failure_n"] = failure_n
-        metrics["failure_rate"] = float(fail_mask.mean() * 100.0) if n_total else None
+    # Failure Type / Lane State distributions (fail frames only)
+    if metrics["failure_n_fixed"] > 0:
+        fail_mask = (ff_fixed == 1)
 
-        if failure_n > 0:
-            # Failure Type / Lane State distributions (fail frames only)
-            if FAIL_TYPE_COL in df.columns:
-                ft = df.loc[fail_mask, FAIL_TYPE_COL].astype(str).fillna("NA")
-                vc = ft.value_counts().head(8)
-                metrics["failure_type_counts_top"] = {k: int(v) for k, v in vc.items()}
-                metrics["failure_type_rates_top"] = {k: float(v / failure_n * 100.0) for k, v in vc.items()}
-            else:
-                metrics["failure_type_counts_top"] = None
-                metrics["failure_type_rates_top"] = None
-
-            if "Lane State" in df.columns:
-                stv = df.loc[fail_mask, "Lane State"].astype(str).fillna("NA")
-                vc = stv.value_counts().head(6)
-                metrics["lane_state_counts_top"] = {k: int(v) for k, v in vc.items()}
-                metrics["lane_state_rates_top"] = {k: float(v / failure_n * 100.0) for k, v in vc.items()}
-            else:
-                metrics["lane_state_counts_top"] = None
-                metrics["lane_state_rates_top"] = None
-
-            # Contours: zero-rate signals (fail frames only)
-            if "Contours Total" in df.columns:
-                ctot = pd.to_numeric(df.loc[fail_mask, "Contours Total"], errors="coerce").dropna()
-                metrics["failure_contours_total_zero_rate"] = float((ctot == 0).mean() * 100.0) if not ctot.empty else None
-            else:
-                metrics["failure_contours_total_zero_rate"] = None
-
-            if "Contours Kept" in df.columns:
-                ckept = pd.to_numeric(df.loc[fail_mask, "Contours Kept"], errors="coerce").dropna()
-                metrics["failure_contours_kept_zero_rate"] = float((ckept == 0).mean() * 100.0) if not ckept.empty else None
-            else:
-                metrics["failure_contours_kept_zero_rate"] = None
-
-            # Direction Force (abs p95) (fail frames only)
-            if "Direction Force" in df.columns:
-                dfc = pd.to_numeric(df.loc[fail_mask, "Direction Force"], errors="coerce").dropna().abs()
-                metrics["failure_direction_force_abs_p95"] = float(dfc.quantile(0.95)) if not dfc.empty else None
-            else:
-                metrics["failure_direction_force_abs_p95"] = None
-
-            # Target CX quantiles (fail frames only)
-            if "Target CX" in df.columns:
-                tcx = pd.to_numeric(df.loc[fail_mask, "Target CX"], errors="coerce").dropna()
-                metrics["failure_target_cx_p05"] = float(tcx.quantile(0.05)) if not tcx.empty else None
-                metrics["failure_target_cx_p95"] = float(tcx.quantile(0.95)) if not tcx.empty else None
-            else:
-                metrics["failure_target_cx_p05"] = None
-                metrics["failure_target_cx_p95"] = None
+        if FAIL_TYPE_COL in df.columns:
+            ft = df.loc[fail_mask, FAIL_TYPE_COL].astype(str).fillna("NA")
+            vc = ft.value_counts().head(8)
+            metrics["failure_type_counts_top"] = {k: int(v) for k, v in vc.items()}
+            metrics["failure_type_rates_top"] = {k: float(v / metrics["failure_n_fixed"] * 100.0) for k, v in vc.items()}
         else:
             metrics["failure_type_counts_top"] = None
             metrics["failure_type_rates_top"] = None
+
+        if "Lane State" in df.columns:
+            stv = df.loc[fail_mask, "Lane State"].astype(str).fillna("NA")
+            vc = stv.value_counts().head(6)
+            metrics["lane_state_counts_top"] = {k: int(v) for k, v in vc.items()}
+            metrics["lane_state_rates_top"] = {k: float(v / metrics["failure_n_fixed"] * 100.0) for k, v in vc.items()}
+        else:
             metrics["lane_state_counts_top"] = None
             metrics["lane_state_rates_top"] = None
+
+        # Contours: zero-rate signals (fail frames only)
+        if "Contours Total" in df.columns:
+            ctot = pd.to_numeric(df.loc[fail_mask, "Contours Total"], errors="coerce").dropna()
+            metrics["failure_contours_total_zero_rate"] = float((ctot == 0).mean() * 100.0) if not ctot.empty else None
+        else:
             metrics["failure_contours_total_zero_rate"] = None
+
+        if "Contours Kept" in df.columns:
+            ckept = pd.to_numeric(df.loc[fail_mask, "Contours Kept"], errors="coerce").dropna()
+            metrics["failure_contours_kept_zero_rate"] = float((ckept == 0).mean() * 100.0) if not ckept.empty else None
+        else:
             metrics["failure_contours_kept_zero_rate"] = None
+
+        # Direction Force (abs p95) (fail frames only)
+        if "Direction Force" in df.columns:
+            dfc = pd.to_numeric(df.loc[fail_mask, "Direction Force"], errors="coerce").dropna().abs()
+            metrics["failure_direction_force_abs_p95"] = float(dfc.quantile(0.95)) if not dfc.empty else None
+        else:
             metrics["failure_direction_force_abs_p95"] = None
+
+        # Target CX quantiles (fail frames only)
+        if "Target CX" in df.columns:
+            tcx = pd.to_numeric(df.loc[fail_mask, "Target CX"], errors="coerce").dropna()
+            metrics["failure_target_cx_p05"] = float(tcx.quantile(0.05)) if not tcx.empty else None
+            metrics["failure_target_cx_p95"] = float(tcx.quantile(0.95)) if not tcx.empty else None
+        else:
             metrics["failure_target_cx_p05"] = None
             metrics["failure_target_cx_p95"] = None
     else:
-        metrics["failure_definition"] = "Failure Flag column missing"
-        metrics["failure_n"] = None
-        metrics["failure_rate"] = None
         metrics["failure_type_counts_top"] = None
         metrics["failure_type_rates_top"] = None
         metrics["lane_state_counts_top"] = None
@@ -1107,7 +1134,6 @@ def _compute_partx_metrics(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | No
         metrics["failure_target_cx_p05"] = None
         metrics["failure_target_cx_p95"] = None
     # ---------------------------------------------------------------------
-
 
     return metrics
 
@@ -1153,6 +1179,11 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
         for k in ["p01","p05","p10","p25","p50","p75","p90","p95","p99"]:
             if k in rq:
                 qrows.append({"지표": "Mask White Ratio", "분위": k, "값": f"{rq[k]:.4f}"})
+    qq = metrics.get("quality_quantiles") or {}
+    if qq:
+        for k in ["p01","p05","p10","p25","p50","p75","p90","p95","p99"]:
+            if k in qq:
+                qrows.append({"지표": "Lane Quality Score", "분위": k, "값": f"{qq[k]:.2f}"})
     if qrows:
         _st_dataframe(pd.DataFrame(qrows), use_container_width=True, hide_index=True)
     else:
@@ -1212,7 +1243,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY가 설정되어 있지 않습니다. (st.secrets 또는 환경변수)")
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
     # --- model & generation controls (fixed defaults; not user-configurable)
     model = "gpt-4o-mini"
@@ -1248,65 +1279,19 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
         return str(x)
 
     safe_metrics = _to_jsonable(metrics)
-
-    def _drop_nulls(x):
-        # None / 빈 dict / 빈 list 제거 (토큰 절약)
-        if x is None:
-            return None
-        if isinstance(x, dict):
-            out = {}
-            for k, v in x.items():
-                vv = _drop_nulls(v)
-                if vv is None:
-                    continue
-                if isinstance(vv, (dict, list)) and len(vv) == 0:
-                    continue
-                out[str(k)] = vv
-            return out
-        if isinstance(x, list):
-            out_list = []
-            for v in x:
-                vv = _drop_nulls(v)
-                if vv is None:
-                    continue
-                if isinstance(vv, (dict, list)) and len(vv) == 0:
-                    continue
-                out_list.append(vv)
-            return out_list
-        return x
-
-    def _topn_dict(d, n: int):
-        if not isinstance(d, dict):
-            return d
-        return dict(list(d.items())[:n])
-
-    # LLM에는 핵심 지표만 전달 (UI/보고서용 상세 dict는 제외)
-    allow = [
-        "n_total",
-        "ratio_low_th","ratio_high_th","ratio_low_rate","ratio_high_rate",
-        "ratio_p05","ratio_p50","ratio_p95","ratio_p99",
-        "err_missing_rate","abs_p95","abs_p99","abs_tail_th","abs_tail_rate",
-        "proc_p95","proc_p99","proc_max","proc_tail_th","proc_tail_rate",
-        "candidate_n","candidate_tag_counts",
-        "failure_definition","failure_n","failure_rate",
-        "failure_type_counts_top","lane_state_counts_top",
-        "failure_contours_total_zero_rate","failure_contours_kept_zero_rate",
-        "failure_direction_force_abs_p95","failure_target_cx_p05","failure_target_cx_p95",
-    ]
-    llm_metrics = {k: safe_metrics.get(k) for k in allow if isinstance(safe_metrics, dict) and k in safe_metrics}
-    if "candidate_tag_counts" in llm_metrics:
-        llm_metrics["candidate_tag_counts"] = _topn_dict(llm_metrics["candidate_tag_counts"], 8)
-    llm_metrics = _drop_nulls(llm_metrics) or {}
-
     payload = {
         "pctl": int(pctl),
-        "metrics": llm_metrics,
+        "metrics": safe_metrics,
         "metric_key_hints": [
             "ratio_p05","ratio_p50","ratio_p95","ratio_p99","ratio_low_rate","ratio_high_rate",
             "abs_p95","abs_p99","err_missing_rate",
             "proc_p95","proc_p99","proc_max",
             "candidate_tag_counts","candidate_n",
-            "failure_definition","failure_n","failure_rate","failure_type_counts_top","lane_state_counts_top",
+            "failure_definition","failure_n_fixed","failure_rate_fixed",
+            "mismatch_na_error_flag0_n","mismatch_ok_error_flag1_n",
+            "failure_type_counts_top","lane_state_counts_top",
+            "failure_contours_total_zero_rate","failure_contours_kept_zero_rate",
+            "failure_direction_force_abs_p95","failure_target_cx_p05","failure_target_cx_p95"
         ],
     }
 
@@ -1346,7 +1331,7 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
         "너는 자율주행(차선 인식) 로그의 '요약 통계'만 보고 개선안을 제안한다. "
         "반드시 한국어로만 작성하라(단위/약어: ms, p95, cx, hsv 등은 예외). "
         "요약에 없는 사실은 만들지 말고, 확신이 없으면 is_speculative=true 및 confidence=low로 표기하라. "
-        "why에는 반드시 metric 키(예: abs_p95, err_missing_rate, failure_rate, failure_type_counts_top 등)를 근거로 언급하라. "
+        "why에는 반드시 metric 키(예: abs_p95, err_missing_rate, failure_rate_fixed, failure_type_counts_top 등)를 근거로 언급하라. "
         "candidate_tag_counts가 있으면 후보(이상 구간) 분포를 근거로 활용하라. "
         "출력은 반드시 JSON 스키마를 따르라."
     )
@@ -1479,6 +1464,8 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
     proc_tail_th = metrics.get("proc_tail_th")
 
     rq = metrics.get("ratio_quantiles") or {}
+    qq = metrics.get("quality_quantiles") or {}
+
     cand_n = metrics.get("candidate_n")
     tag_counts = metrics.get("candidate_tag_counts") or {}
     tag_top = list(tag_counts.items())[:6]
@@ -1513,9 +1500,9 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
     lines.append("| 항목 | 값 | 비고 |")
     lines.append("|---|---:|---|")
     if ratio_low_th is not None:
-        lines.append(f"| Mask Ratio 하한(하위 {100 - pctl}% 분위) | {fmt(ratio_low_th)} | 낮은 가시성/미검출 후보 |")
+        lines.append(f"| Mask Ratio 하한(하위 {100 - pctl}% 분위) | {fmt(ratio_low_th)} | 낮은 가시성/미검출 후보(단정 금지) |")
         lines.append(f"| Mask Ratio 하한 이하 비율 | {fmt2(ratio_low_rate)}% | 꼬리 구간 비중 |")
-        lines.append(f"| Mask Ratio 상한(상위 {100 - pctl}% 분위) | {fmt(ratio_high_th)} | 과검출 후보 |")
+        lines.append(f"| Mask Ratio 상한(상위 {100 - pctl}% 분위) | {fmt(ratio_high_th)} | 과검출 후보(원인은 추측) |")
         lines.append(f"| Mask Ratio 상한 이상 비율 | {fmt2(ratio_high_rate)}% | 꼬리 구간 비중 |")
     else:
         lines.append("| Mask Ratio | N/A | 컬럼/값 부족 |")
@@ -1538,6 +1525,7 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
     lines.append("")
     lines.append("### 참고 분위수(요약)")
     lines.append("- Mask White Ratio: " + ", ".join([f"{k}={fmt(v)}" for k, v in rq.items() if k in ["p05","p50","p95"]]) if rq else "- Mask White Ratio: N/A")
+    lines.append("- Lane Quality Score: " + ", ".join([f"{k}={fmt2(v)}" for k, v in qq.items() if k in ["p05","p50","p95"]]) if qq else "- Lane Quality Score: N/A")
     lines.append("")
 
     lines.append("## 2) 후보(이상 구간) 요약")
@@ -1553,7 +1541,7 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
         lines.append("- 후보 태그 분포: N/A")
     lines.append("")
 
-    lines.append("## 3) 개선사항")
+    lines.append("## 3) 개선사항(자동 생성/수정 가능)")
     if llm_md:
         # OpenAI 출력은 이미 markdown 형식. 그대로 사용
         lines.append(llm_md)
@@ -1570,7 +1558,7 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
     metrics = _render_part_x_distribution(df, pctl, cand=cand)
 
     st.markdown("### 개선사항(OpenAI 자동 생성)")
-    st.caption("버튼을 누르면 위 분포 요약을 근거로 개선사항을 생성합니다.")
+    st.caption("버튼을 누르면 위 분포 요약을 근거로 개선사항을 생성합니다. (API 키는 secrets/환경변수에 설정)")
 
 
     col_a, col_b = st.columns([1, 1])
@@ -1584,6 +1572,20 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
         st.session_state.pop("partx_openai_text", None)
         st.session_state.pop("partx_report_text", None)
     if run_btn:
+        # --- OpenAI 입력(요약 통계) 확인: 새 컬럼/지표가 metrics에 반영되었는지 점검
+        debug_keys = [
+            'has_failure_flag_col','has_failure_type_col','has_lane_state_col','has_target_cx_col','has_contours_cols','has_direction_force_col',
+            'failure_definition','failure_n_fixed','failure_rate_fixed',
+            'mismatch_na_error_flag0_n','mismatch_ok_error_flag1_n',
+            'failure_type_counts_top','lane_state_counts_top',
+            'failure_contours_total_zero_rate','failure_contours_kept_zero_rate',
+            'failure_direction_force_abs_p95','failure_target_cx_p05','failure_target_cx_p95',
+            'optional_nonnull_counts'
+        ]
+        st.markdown('#### OpenAI 입력 확인(요약 통계)')
+        st.caption('OpenAI에 전달되는 metrics 일부를 표시합니다. 여기 값이 None/0이면 LLM도 근거로 사용하지 못합니다.')
+        _st_dataframe(pd.DataFrame([{'key': k, 'value': metrics.get(k)} for k in debug_keys]), hide_index=True, use_container_width=True)
+
         try:
             with st.spinner("OpenAI 호출 중..."):
                 llm = _openai_generate_recos_from_metrics(metrics, pctl=pctl)
