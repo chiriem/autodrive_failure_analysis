@@ -59,7 +59,7 @@ from fa_utils import (
     draw_histogram,
 )
 
-st.set_page_config(page_title="실패분석", page_icon="🛣️", layout="wide")
+st.set_page_config(page_title="로그분석", page_icon="🛣️", layout="wide")
 
 
 def _render_timestamp_outlier_windows_from_flags(df_flags: pd.DataFrame, pctl=None) -> None:
@@ -198,7 +198,7 @@ if analysis_mode == "0115 고정 데이터 분석":
     st.stop()   
 
 else:
-    st.title("자율주행 실패 분석 (OpenCV 로그: Mask Ratio + Error 중심)")
+    st.title("자율주행 로그 분석")
     st.caption("Mask White Ratio / Lane Error / Processing Time (ms)를 중심으로 분석합니다.")
 
     if "uploader_count" not in st.session_state:
