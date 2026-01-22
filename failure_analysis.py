@@ -432,16 +432,11 @@ else:
     miss_rate = float(err_missing.mean())
     pres_rate = 1.0 - miss_rate
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, = st.columns(2)
     with m1:
         st.metric("Lane Error missing", f"{miss_rate*100:.1f}%")
     with m2:
         st.metric("Lane Error present", f"{pres_rate*100:.1f}%")
-    with m3:
-        if MODE_COL in df.columns:
-            st.metric("Mode 종류 수", f"{df[MODE_COL].nunique(dropna=True)}")
-        else:
-            st.metric("Mode 종류 수", "N/A")
 
     tab_overview, tab_bins, tab_env = st.tabs(["개요", "Mask Ratio 구간", "환경"])
 
@@ -602,8 +597,7 @@ else:
     # 기본 컬럼(다른 파트에서도 흔히 쓰는 컬럼) + 나머지(신규/추가 컬럼)는 이 테이블에서만 노출
     base_cols = [
         TS_COL,
-        RUN_ID_COL, ROW_IN_RUN_COL, EVENT_ID_COL,
-        FAIL_FLAG_COL, FAIL_TYPE_COL,
+        FAIL_TYPE_COL,
         WEATHER_COL, TOD_COL, MODE_COL,
         QUALITY_COL,
         MASK_RATIO_COL, ERROR_COL, ABS_ERROR_COL, PROC_COL,
