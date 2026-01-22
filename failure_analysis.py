@@ -1423,7 +1423,7 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
         lines = [f"- 전체 후보 수: **{total_cand:,}** / 전체 대비 **{(total_cand / n_total * 100.0 if n_total else 0):.2f}%**"]
         # 상위 6개 표시
         for k, v in list(tag_counts.items())[:6]:
-            lines.append(f"- {k}: {v:,}건 (전체 대비 {(v / n_total * 100.0):.2f}%, 후보 내 {(v / total_cand * 100.0 if total_cand else 0):.2f}%)")
+            lines.append(f"- {k}: {v:,}건 (전체 대비 {(v / n_total * 100.0):.2f}%")
         st.markdown("\n".join(lines))
     else:
         st.info("후보가 없거나(민감도 높음), 후보 태그를 만들 수 없는 구성입니다.")
@@ -1594,15 +1594,15 @@ def _openai_generate_recos_from_metrics(metrics: dict, pctl: int) -> dict:
     # --- prompt (short, metric-grounded)
     system = (
         "너는 자율주행(차선 인식) 로그의 '요약 통계'만 보고 개선안을 제안한다. "
-        "반드시 한국어로만 작성하라(단위/약어: ms, p95, cx, hsv 등은 예외). "
-        "요약에 없는 사실은 만들지 말고, 확신이 없으면 is_speculative=true 및 confidence=low로 표기하라. "
-        "why에는 반드시 metric 키(예: abs_p95, err_missing_rate, failure_rate, failure_type_counts_top 등)를 근거로 언급하라. "
-        "candidate_tag_counts가 있으면 후보(이상 구간) 분포를 근거로 활용하라. "
-        "출력은 반드시 JSON 스키마를 따르라."
+        "반드시 한국어로만 작성한다.(단위/약어: ms, p95, cx, hsv 등은 예외). "
+        "요약에 없는 사실은 만들지 말고, 확신이 없으면 is_speculative=true 및 confidence=low로 표기한다. "
+        "why에는 반드시 metric 키(예: abs_p95, err_missing_rate, failure_rate, failure_type_counts_top 등)를 근거로 언급한다. "
+        "candidate_tag_counts가 있으면 후보(이상 구간) 분포를 근거로 활용한다. "
+        "출력은 반드시 JSON 스키마를 따른다."
     )
     user = (
-        "아래 JSON은 Part X에서 계산한 요약 통계이다. "
-        "이 정보만 근거로 개선안을 작성하라. 모든 문장은 한국어로 작성하라(단위/약어 제외).\n\n"
+        "아래 JSON은 Part X에서 계산한 요약 통계다. "
+        "이 정보만 근거로 개선안을 작성하라. 단위와 약어를 제외한 모든 문장은 한국어로 작성하라.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
 
