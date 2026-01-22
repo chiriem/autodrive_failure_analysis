@@ -317,6 +317,8 @@ else:
                 d = pd.read_csv(f)
                 # Preserve Failure Flag exactly as-is (CSV header uses 'Failure Flag')
                 _ff = d['Failure Flag'].to_numpy(copy=True) if 'Failure Flag' in d.columns else None
+                # Preserve Failure Type exactly as-is (CSV header uses 'Failure Type')
+                _ft = d['Failure Type'].to_numpy(copy=True) if 'Failure Type' in d.columns else None
                 d = _select_fixed_columns(d)
                 if _ff is not None and 'Failure Flag' not in d.columns:
                     if len(d) == len(_ff):
@@ -325,6 +327,13 @@ else:
                         # If row count changed unexpectedly, fall back to index-aligned assign
                         # (should be rare; keeps behavior explicit without broad normalization)
                         d['Failure Flag'] = pd.Series(_ff).reindex(d.index).to_numpy()
+                if _ft is not None and 'Failure Type' not in d.columns:
+                    if len(d) == len(_ft):
+                        d['Failure Type'] = _ft
+                    else:
+                        # If row count changed unexpectedly, fall back to index-aligned assign
+                        # (should be rare; keeps behavior explicit without broad normalization)
+                        d['Failure Type'] = pd.Series(_ft).reindex(d.index).to_numpy()
                 d = _ensure_fields(d)
 
                 safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
@@ -668,10 +677,9 @@ else:
         abs_med = float(abs_s.median()) if abs_s is not None else None
         abs_p95 = float(abs_s.quantile(0.95)) if abs_s is not None else None
 
-        ratio_med = float(ratio_s.median()) if ratio_s is not None else None
-        ratio_p05 = float(ratio_s.quantile(0.05)) if ratio_s is not None else None
+        ratio_mean = float(ratio_s.mean()) if ratio_s is not None else None
 
-        proc_p95 = float(proc_s.quantile(0.95)) if proc_s is not None else None
+        proc_mean = float(proc_s.mean()) if proc_s is not None else None
 
         # Failure 프레임에서 Lane Error(원값) 기록 여부(결측) 요약
         _err_raw = pd.to_numeric(_fail_df.get(ERROR_COL), errors="coerce") if ERROR_COL in _fail_df.columns else pd.Series(dtype=float)
@@ -704,13 +712,9 @@ else:
             else:
                 st.metric(f"{ABS_ERROR_COL} p95", f"{abs_p95:.2f}")
         with c7:
-            st.metric(f"{MASK_RATIO_COL} 중앙값", "N/A" if ratio_med is None else f"{ratio_med:.4f}")
+            st.metric(f"{MASK_RATIO_COL} 평균", "N/A" if ratio_mean is None else f"{ratio_mean:.4f}")
         with c8:
-            # 처리시간이 있으면 p95, 없으면 Mask Ratio p05
-            if proc_p95 is not None:
-                st.metric(f"{PROC_COL} p95", f"{proc_p95:.1f} ms")
-            else:
-                st.metric(f"{MASK_RATIO_COL} p05", "N/A" if ratio_p05 is None else f"{ratio_p05:.4f}")
+            st.metric(f"{PROC_COL} 평균", "N/A" if proc_mean is None else f"{proc_mean:.1f} ms")
 
         if abs_s is None:
             st.caption(f"참고: 현재 실패 프레임에서 '{ERROR_COL}' 값이 비어 있어 '{ABS_ERROR_COL}' 분위수를 계산할 수 없습니다. 대신 '{ERROR_COL}' 결측 정보를 표시합니다.")
@@ -730,6 +734,32 @@ else:
                         "rate(%)": (vc.values / _n_fail * 100.0).round(2),
                     })
                     _st_dataframe(t, use_container_width=True, hide_index=True)
+        # --- Processing Time 평균 비교(정상 vs 실패) - table
+        if PROC_COL in df.columns:
+            _proc_all = pd.to_numeric(df[PROC_COL], errors="coerce")
+
+            _case_rows = []
+            for _case_name, _mask in [("정상", ~_fail_mask), ("실패", _fail_mask)]:
+                _n_case = int(_mask.sum())
+                _s = _proc_all.loc[_mask]
+                _n_valid = int(_s.notna().sum())
+                _mean_ms = float(_s.mean()) if _n_valid > 0 else np.nan
+                _missing_rate = float((1 - (_n_valid / _n_case)) * 100.0) if _n_case > 0 else np.nan
+
+                _case_rows.append({
+                    "case": _case_name,
+                    "프레임 수": _n_case,
+                    "Processing Time 평균": (round(_mean_ms, 1) if _n_valid > 0 else np.nan),
+                })
+
+            st.markdown("### Processing Time 평균 비교")
+            _cmp_df = pd.DataFrame(_case_rows)
+            _st_dataframe(_cmp_df, use_container_width=True, hide_index=True)
+            st.caption("Processing Time의 평균을 정상/실패 프레임으로 비교합니다.")
+        else:
+            st.info(f"'{PROC_COL}' 컬럼이 없어 Processing Time 평균 비교 테이블을 만들 수 없습니다.")
+
+
 
 
 # =============================================================================
