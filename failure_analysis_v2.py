@@ -220,75 +220,29 @@ else:
     st.subheader("이 페이지는 https://github.com/chiriem/autodrive_failure_analysis/tree/main/data 의 0115_12_log.csv를 업로드하는 것을 기준으로 제작되었습니다.")
 
     def _generate_demo(n: int = 1200) -> pd.DataFrame:
-        """Generate demo data.
-    
-        - Base columns are synthetic but shaped to resemble typical ranges.
-        - Additional columns (Failure Flag/Type, Lane State, Target CX, Contours*, Direction Force)
-          are populated in a way that mirrors the provided 0115_12_log.csv:
-            * ~10% frames have Failure Flag == 1
-            * For failure frames, the extra columns are populated; otherwise left as NaN.
-        """
         np.random.seed(7)
-    
+
         weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
         tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
-    
-        # Mask White Ratio: 0~1 (mostly low; can be noisier in adverse conditions)
-        base_ratio = np.random.beta(3, 25, n)
+
+        # 마스크 비율 0~1 (차선이 거의 보이지 않을 때 매우 낮음; 눈부심에서 노이즈로 높을 수 있음)
+        base_ratio = np.random.beta(3, 25, n)  # 대부분 작은 비율
         base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
         base_ratio[tod == "Night"] *= 0.8
         mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
-    
-        # Lane Quality Score: 0~100 (not perfectly tied to mask_ratio)
+
+        # 품질 0~100: 비율과 동일하지 않음 (분기 케이스를 볼 수 있도록)
         quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
-        fp = np.random.rand(n) < 0.03  # false positives: ratio high but quality low
+        # 거짓 양성 주입 (비율은 높지만 품질은 낮음)
+        fp = np.random.rand(n) < 0.03
         quality[fp] = np.clip(quality[fp] - 50, 0, 100)
-    
-        # Lane Error (signed); abs is derived later. We will mimic the 0115 log pattern
-        # where failure frames may have Lane Error missing.
+
+        # 품질이 낮을 때 오차 증가
         abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
         err = abs_err * np.random.choice([-1, 1], n)
-    
+
         proc = np.random.normal(28, 5, n)
         mode = np.random.choice(["AUTO", "MANUAL"], n, p=[0.9, 0.1])
-    
-        # Failure Flag: about 10% are failures (exact count for stability)
-        n_fail = max(1, int(round(n * 0.10)))
-        fail_idx = np.random.choice(np.arange(n), size=n_fail, replace=False)
-        fail_flag = np.zeros(n, dtype=int)
-        fail_flag[fail_idx] = 1
-    
-        # Extra/new columns: default NaN; populated only for failure frames
-        lane_state = np.array([np.nan] * n, dtype=object)
-        failure_type = np.array([np.nan] * n, dtype=object)
-        target_cx = np.full(n, np.nan, dtype=float)
-        contours_total = np.full(n, np.nan, dtype=float)
-        contours_kept = np.full(n, np.nan, dtype=float)
-        dir_force = np.full(n, np.nan, dtype=float)
-    
-        # Values informed by the provided 0115_12_log.csv (failure rows only):
-        lane_state[fail_idx] = "none"
-        failure_type[fail_idx] = "area_filtered"
-    
-        # Contours Total distribution observed in failure rows of 0115_12_log.csv
-        _ct_vals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28]
-        _ct_counts = [1, 3, 5, 2, 4, 2, 2, 2, 4, 1, 4, 3, 2, 2, 2, 6, 1, 8, 3, 7, 1, 8, 4, 8, 2]
-        _ct_p = np.array(_ct_counts, dtype=float)
-        _ct_p = _ct_p / _ct_p.sum()
-        contours_total[fail_idx] = np.random.choice(_ct_vals, size=n_fail, p=_ct_p).astype(float)
-    
-        # In the provided log, Contours Kept and Direction Force were 0 for failure rows
-        contours_kept[fail_idx] = 0.0
-        dir_force[fail_idx] = 0.0
-    
-        # Target CX was missing in the provided log (all NaN).
-        # For demo purposes, populate only for failure frames with a plausible center-ish value.
-        # (추측입니다: 실제 센서/화면 폭에 따라 범위는 달라질 수 있음)
-        target_cx[fail_idx] = np.clip(np.random.normal(160, 30, n_fail), 0, 320)
-    
-        # Mimic the observed pattern: Lane Error missing for failure frames in 0115_12_log.csv
-        err[fail_idx] = np.nan
-    
         df = pd.DataFrame({
             TS_COL: np.arange(n) * 100,  # ms
             WEATHER_COL: weather,
@@ -298,18 +252,10 @@ else:
             ERROR_COL: err,
             PROC_COL: proc,
             MODE_COL: mode,
-            FAIL_FLAG_COL: fail_flag,
-            FAIL_TYPE_COL: failure_type,
-            LANE_STATE_COL: lane_state,
-            TARGET_CX_COL: target_cx,
-            CONTOURS_TOTAL_COL: contours_total,
-            CONTOURS_KEPT_COL: contours_kept,
-            DIR_FORCE_COL: dir_force,
         })
-    
-        # Abs Lane Error is derived from Lane Error (sign is meaningless)
-        df[ABS_ERROR_COL] = pd.to_numeric(df[ERROR_COL], errors="coerce").abs()
+        df[ABS_ERROR_COL] = df[ERROR_COL].abs()
         return df
+
     if uploaded_files:
         dfs = []
         for f in uploaded_files:
@@ -348,10 +294,6 @@ else:
     if df.empty:
         st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
         st.stop()
-
-
-# Abs Lane Error는 Lane Error의 절대값으로 정의 (부호는 무의미)
-df[ABS_ERROR_COL] = pd.to_numeric(df[ERROR_COL], errors="coerce").abs()
 
 # 필수 컬럼 검증
 missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
@@ -622,118 +564,8 @@ else:
             height=420,
         )
 
-
 # =============================================================================
-# Part II: 실패 요약 카드 (Failure Flag == 1)
-
-st.divider()
-st.markdown("## Part II — 실패 요약 카드")
-st.caption("Failure Flag == 1 프레임만 대상으로, 핵심 분포/빈도 지표를 빠르게 요약합니다. (원인 단정 아님)")
-
-if FAIL_FLAG_COL not in df.columns:
-    st.warning(f"'{FAIL_FLAG_COL}' 컬럼이 없어 실패 요약 카드를 생성할 수 없습니다.")
-else:
-    # Failure 정의: Failure Flag == 1
-    _fail_s = pd.to_numeric(df[FAIL_FLAG_COL], errors="coerce").fillna(0)
-    _fail_mask = _fail_s.eq(1)
-
-    _n_total = int(len(df))
-    _n_fail = int(_fail_mask.sum())
-    _fail_rate = (_n_fail / _n_total * 100.0) if _n_total > 0 else 0.0
-
-    if _n_fail == 0:
-        st.info("Failure Flag == 1 프레임이 없습니다.")
-    else:
-        _fail_df = df.loc[_fail_mask].copy()
-
-        def _num_series(col: str) -> "pd.Series | None":
-            if col not in _fail_df.columns:
-                return None
-            s = pd.to_numeric(_fail_df[col], errors="coerce").dropna()
-            return s if len(s) else None
-
-        def _top_value(col: str) -> tuple[str, int] | None:
-            if col not in _fail_df.columns:
-                return None
-            vc = _fail_df[col].astype(str).fillna("nan").value_counts()
-            if vc.empty:
-                return None
-            return (str(vc.index[0]), int(vc.iloc[0]))
-
-        # --- 핵심 분포 지표(실패 프레임 기준)
-        abs_s = _num_series(ABS_ERROR_COL)
-        ratio_s = _num_series(MASK_RATIO_COL)
-        proc_s = _num_series(PROC_COL)
-
-        abs_med = float(abs_s.median()) if abs_s is not None else None
-        abs_p95 = float(abs_s.quantile(0.95)) if abs_s is not None else None
-
-        ratio_med = float(ratio_s.median()) if ratio_s is not None else None
-        ratio_p05 = float(ratio_s.quantile(0.05)) if ratio_s is not None else None
-
-        proc_p95 = float(proc_s.quantile(0.95)) if proc_s is not None else None
-
-        # Failure 프레임에서 Lane Error(원값) 기록 여부(결측) 요약
-        _err_raw = pd.to_numeric(_fail_df.get(ERROR_COL), errors="coerce") if ERROR_COL in _fail_df.columns else pd.Series(dtype=float)
-        _err_present_n = int(_err_raw.notna().sum()) if len(_fail_df) else 0
-        _err_missing_rate = float(_err_raw.isna().mean() * 100.0) if len(_fail_df) else None
-
-        ft_top = _top_value(FAIL_TYPE_COL)
-        # --- 1행 카드
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("실패 프레임 수", f"{_n_fail:,}")
-        with c2:
-            st.metric("실패율", f"{_fail_rate:.2f}%")
-        with c3:
-            if ft_top is None:
-                st.metric(f"최다 {FAIL_TYPE_COL}", "N/A")
-            else:
-                st.metric(f"최다 {FAIL_TYPE_COL}", ft_top[0], delta=f"n={ft_top[1]:,}")
-
-        # --- 2행 카드
-        c5, c6, c7, c8 = st.columns(4)
-        with c5:
-            if abs_med is None:
-                st.metric(f"{ERROR_COL} 기록 프레임", f"{_err_present_n:,}")
-            else:
-                st.metric(f"{ABS_ERROR_COL} 중앙값", f"{abs_med:.2f}")
-        with c6:
-            if abs_p95 is None:
-                st.metric(f"{ERROR_COL} 결측률", "N/A" if _err_missing_rate is None else f"{_err_missing_rate:.1f}%")
-            else:
-                st.metric(f"{ABS_ERROR_COL} p95", f"{abs_p95:.2f}")
-        with c7:
-            st.metric(f"{MASK_RATIO_COL} 중앙값", "N/A" if ratio_med is None else f"{ratio_med:.4f}")
-        with c8:
-            # 처리시간이 있으면 p95, 없으면 Mask Ratio p05
-            if proc_p95 is not None:
-                st.metric(f"{PROC_COL} p95", f"{proc_p95:.1f} ms")
-            else:
-                st.metric(f"{MASK_RATIO_COL} p05", "N/A" if ratio_p05 is None else f"{ratio_p05:.4f}")
-
-        if abs_s is None:
-            st.caption(f"참고: 현재 실패 프레임에서 '{ERROR_COL}' 값이 비어 있어 '{ABS_ERROR_COL}' 분위수를 계산할 수 없습니다. 대신 '{ERROR_COL}' 결측 정보를 표시합니다.")
-
-        # --- 상위 분포(빈도) 표(선택)
-        show_freq_tables = st.checkbox("실패 빈도 요약 표 보기", value=False)
-        if show_freq_tables:
-            colA, colB = st.columns(2)
-
-            if ft_top is not None:
-                with colA:
-                    st.markdown(f"### {FAIL_TYPE_COL} 상위")
-                    vc = _fail_df[FAIL_TYPE_COL].astype(str).fillna("nan").value_counts().head(8)
-                    t = pd.DataFrame({
-                        FAIL_TYPE_COL: vc.index,
-                        "count": vc.values,
-                        "rate(%)": (vc.values / _n_fail * 100.0).round(2),
-                    })
-                    _st_dataframe(t, use_container_width=True, hide_index=True)
-
-
-# =============================================================================
-# Reference (collapsed): deviation regression (legacy Part I & II)
+# Reference (collapsed): Part I & II (Deviation regression)
 
 
 def _render_reference_deviation_regression(df: pd.DataFrame) -> None:
@@ -742,7 +574,7 @@ def _render_reference_deviation_regression(df: pd.DataFrame) -> None:
 
     st.divider()
     st.markdown(f"""
-    ## Reference I: {MASK_RATIO_COL} ↔ {ABS_ERROR_COL}
+    ## Part I: {MASK_RATIO_COL} ↔ {ABS_ERROR_COL}
 
     - **Mask White Ratio(0~1)**: 마스크에서 흰 픽셀(0이 아닌 픽셀)이 차지하는 비율(= 검출량/가시성 신호)
     - **Abs Lane Error**: 화면 중앙 대비 목표 지점의 오차 크기(픽셀)
@@ -809,7 +641,7 @@ def _render_reference_deviation_regression(df: pd.DataFrame) -> None:
 
     st.divider()
     st.markdown(f"""
-    ## Reference II: {MASK_RATIO_COL} ↔ {PROC_COL}
+    ## Part II: {MASK_RATIO_COL} ↔ {PROC_COL}
 
     처리시간(지연)과 Mask White Ratio가 함께 변하는지 확인합니다.
     - ratio가 극단(매우 낮음/높음)인 구간에서 처리시간이 튀는지
@@ -1860,7 +1692,7 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
 # =============================================================================
 # Reference: Deviation regression (optional)
 st.divider()
-with st.expander("Reference: deviation regression", expanded=False):
+with st.expander("Reference: deviation regression (Part I & II)", expanded=False):
     _render_reference_deviation_regression(df)
 
 # Part X 실행

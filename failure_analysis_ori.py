@@ -220,75 +220,29 @@ else:
     st.subheader("이 페이지는 https://github.com/chiriem/autodrive_failure_analysis/tree/main/data 의 0115_12_log.csv를 업로드하는 것을 기준으로 제작되었습니다.")
 
     def _generate_demo(n: int = 1200) -> pd.DataFrame:
-        """Generate demo data.
-    
-        - Base columns are synthetic but shaped to resemble typical ranges.
-        - Additional columns (Failure Flag/Type, Lane State, Target CX, Contours*, Direction Force)
-          are populated in a way that mirrors the provided 0115_12_log.csv:
-            * ~10% frames have Failure Flag == 1
-            * For failure frames, the extra columns are populated; otherwise left as NaN.
-        """
         np.random.seed(7)
-    
+
         weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
         tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
-    
-        # Mask White Ratio: 0~1 (mostly low; can be noisier in adverse conditions)
-        base_ratio = np.random.beta(3, 25, n)
+
+        # 마스크 비율 0~1 (차선이 거의 보이지 않을 때 매우 낮음; 눈부심에서 노이즈로 높을 수 있음)
+        base_ratio = np.random.beta(3, 25, n)  # 대부분 작은 비율
         base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
         base_ratio[tod == "Night"] *= 0.8
         mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
-    
-        # Lane Quality Score: 0~100 (not perfectly tied to mask_ratio)
+
+        # 품질 0~100: 비율과 동일하지 않음 (분기 케이스를 볼 수 있도록)
         quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
-        fp = np.random.rand(n) < 0.03  # false positives: ratio high but quality low
+        # 거짓 양성 주입 (비율은 높지만 품질은 낮음)
+        fp = np.random.rand(n) < 0.03
         quality[fp] = np.clip(quality[fp] - 50, 0, 100)
-    
-        # Lane Error (signed); abs is derived later. We will mimic the 0115 log pattern
-        # where failure frames may have Lane Error missing.
+
+        # 품질이 낮을 때 오차 증가
         abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
         err = abs_err * np.random.choice([-1, 1], n)
-    
+
         proc = np.random.normal(28, 5, n)
         mode = np.random.choice(["AUTO", "MANUAL"], n, p=[0.9, 0.1])
-    
-        # Failure Flag: about 10% are failures (exact count for stability)
-        n_fail = max(1, int(round(n * 0.10)))
-        fail_idx = np.random.choice(np.arange(n), size=n_fail, replace=False)
-        fail_flag = np.zeros(n, dtype=int)
-        fail_flag[fail_idx] = 1
-    
-        # Extra/new columns: default NaN; populated only for failure frames
-        lane_state = np.array([np.nan] * n, dtype=object)
-        failure_type = np.array([np.nan] * n, dtype=object)
-        target_cx = np.full(n, np.nan, dtype=float)
-        contours_total = np.full(n, np.nan, dtype=float)
-        contours_kept = np.full(n, np.nan, dtype=float)
-        dir_force = np.full(n, np.nan, dtype=float)
-    
-        # Values informed by the provided 0115_12_log.csv (failure rows only):
-        lane_state[fail_idx] = "none"
-        failure_type[fail_idx] = "area_filtered"
-    
-        # Contours Total distribution observed in failure rows of 0115_12_log.csv
-        _ct_vals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28]
-        _ct_counts = [1, 3, 5, 2, 4, 2, 2, 2, 4, 1, 4, 3, 2, 2, 2, 6, 1, 8, 3, 7, 1, 8, 4, 8, 2]
-        _ct_p = np.array(_ct_counts, dtype=float)
-        _ct_p = _ct_p / _ct_p.sum()
-        contours_total[fail_idx] = np.random.choice(_ct_vals, size=n_fail, p=_ct_p).astype(float)
-    
-        # In the provided log, Contours Kept and Direction Force were 0 for failure rows
-        contours_kept[fail_idx] = 0.0
-        dir_force[fail_idx] = 0.0
-    
-        # Target CX was missing in the provided log (all NaN).
-        # For demo purposes, populate only for failure frames with a plausible center-ish value.
-        # (추측입니다: 실제 센서/화면 폭에 따라 범위는 달라질 수 있음)
-        target_cx[fail_idx] = np.clip(np.random.normal(160, 30, n_fail), 0, 320)
-    
-        # Mimic the observed pattern: Lane Error missing for failure frames in 0115_12_log.csv
-        err[fail_idx] = np.nan
-    
         df = pd.DataFrame({
             TS_COL: np.arange(n) * 100,  # ms
             WEATHER_COL: weather,
@@ -298,33 +252,16 @@ else:
             ERROR_COL: err,
             PROC_COL: proc,
             MODE_COL: mode,
-            FAIL_FLAG_COL: fail_flag,
-            FAIL_TYPE_COL: failure_type,
-            LANE_STATE_COL: lane_state,
-            TARGET_CX_COL: target_cx,
-            CONTOURS_TOTAL_COL: contours_total,
-            CONTOURS_KEPT_COL: contours_kept,
-            DIR_FORCE_COL: dir_force,
         })
-    
-        # Abs Lane Error is derived from Lane Error (sign is meaningless)
-        df[ABS_ERROR_COL] = pd.to_numeric(df[ERROR_COL], errors="coerce").abs()
+        df[ABS_ERROR_COL] = df[ERROR_COL].abs()
         return df
+
     if uploaded_files:
         dfs = []
         for f in uploaded_files:
             try:
                 d = pd.read_csv(f)
-                # Preserve Failure Flag exactly as-is (CSV header uses 'Failure Flag')
-                _ff = d['Failure Flag'].to_numpy(copy=True) if 'Failure Flag' in d.columns else None
                 d = _select_fixed_columns(d)
-                if _ff is not None and 'Failure Flag' not in d.columns:
-                    if len(d) == len(_ff):
-                        d['Failure Flag'] = _ff
-                    else:
-                        # If row count changed unexpectedly, fall back to index-aligned assign
-                        # (should be rare; keeps behavior explicit without broad normalization)
-                        d['Failure Flag'] = pd.Series(_ff).reindex(d.index).to_numpy()
                 d = _ensure_fields(d)
 
                 safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
@@ -348,10 +285,6 @@ else:
     if df.empty:
         st.info("CSV를 업로드하거나 '데모 데이터 사용'을 켜세요.")
         st.stop()
-
-
-# Abs Lane Error는 Lane Error의 절대값으로 정의 (부호는 무의미)
-df[ABS_ERROR_COL] = pd.to_numeric(df[ERROR_COL], errors="coerce").abs()
 
 # 필수 컬럼 검증
 missing = [c for c in FIXED_LOG_COLS if c not in df.columns]
@@ -568,300 +501,131 @@ else:
             _st_dataframe(ge.sort_values("missing_%", ascending=False), hide_index=True, use_container_width=True)
 
 
-
 # =============================================================================
-# Part I: 실패 프레임 테이블 (Failure Flag == 1)
+# Part I: Mask White Ratio ↔ Abs Lane Error
 
 st.divider()
-st.markdown("## Part I — 실패 프레임 테이블")
+st.markdown(f"""
+## Part I: {MASK_RATIO_COL} ↔ {ABS_ERROR_COL}
 
-if FAIL_FLAG_COL not in df.columns:
-    st.warning(f"'{FAIL_FLAG_COL}' 컬럼이 없어 실패 프레임 테이블을 생성할 수 없습니다.")
+- **Mask White Ratio(0~1)**: 마스크에서 흰 픽셀(0이 아닌 픽셀)이 차지하는 비율(= 검출량/가시성 신호)
+- **Abs Lane Error**: 화면 중앙 대비 목표 지점의 오차 크기(픽셀)
+- 둘 사이의 회귀를 진행. 초록색 +로 표기된 데이터는 이상값으로 추정
+
+가능한 판단:
+- **ratio↓ & error↑**: 검출량이 부족한 구간에서 조향각이 커지는 패턴
+- **ratio↑ & error↑**:흰 선이 지나치게 잘 잡히면서 조향각도 큰 패턴(빛 반사/노이즈 영향 가능)
+""")
+
+if ABS_ERROR_COL not in df.columns:
+    st.info(f"'{ERROR_COL}'(또는 '{ABS_ERROR_COL}') 컬럼이 없어서 Part I의 Error 기반 분석은 생략됩니다.")
 else:
-    # Failure 정의: Failure Flag == 1
-    fail_s = pd.to_numeric(df[FAIL_FLAG_COL], errors="coerce").fillna(0)
-    fail_mask = fail_s.eq(1)
+    model_df = perform_linear_regression(df, MASK_RATIO_COL, ABS_ERROR_COL, sigma_threshold=2.0)
 
-    n_total = int(len(df))
-    n_fail = int(fail_mask.sum())
-    pct = (n_fail / n_total * 100.0) if n_total > 0 else 0.0
-
-    st.caption(f"실패 프레임: {n_fail} / {n_total} ({pct:.2f}%)")
-
-    fail_df = df.loc[fail_mask].copy()
-
-    # 기본 컬럼(다른 파트에서도 흔히 쓰는 컬럼) + 나머지(신규/추가 컬럼)는 이 테이블에서만 노출
-    base_cols = [
-        TS_COL,
-        RUN_ID_COL, ROW_IN_RUN_COL, EVENT_ID_COL,
-        FAIL_FLAG_COL, FAIL_TYPE_COL,
-        WEATHER_COL, TOD_COL, MODE_COL,
-        QUALITY_COL,
-        MASK_RATIO_COL, ERROR_COL, ABS_ERROR_COL, PROC_COL,
-    ]
-    base_cols_present = [c for c in base_cols if c in fail_df.columns]
-    extra_cols = [c for c in fail_df.columns if c not in base_cols_present]
-    show_cols = base_cols_present + extra_cols
-
-    # 정렬(가능하면 Timestamp 기준)
-    if TS_COL in fail_df.columns:
-        try:
-            fail_df = fail_df.sort_values(TS_COL, ascending=True)
-        except Exception:
-            # 정렬 실패 시 원본 순서 유지
-            pass
-
-    if fail_df.empty:
-        st.info("Failure Flag == 1 프레임이 없습니다.")
-    else:
-        _st_dataframe(
-            fail_df[show_cols],
-            column_config=_column_config_for(show_cols),
-            hide_index=True,
+    c1, c2 = st.columns([0.7, 0.3])
+    with c1:
+        st.altair_chart(
+            alt.Chart(model_df)
+            .mark_point(filled=True, opacity=0.5)
+            .encode(
+                x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y(ABS_ERROR_COL, type="quantitative", scale=alt.Scale(zero=True)),
+                color=alt.Color("Status:N").legend(None),
+                shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
+                tooltip=_make_tooltip(model_df, [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ABS_ERROR_COL, "Status"]),
+            )
+            .properties(height=420),
             use_container_width=True,
-            height=420,
+        )
+    with c2:
+        draw_histogram(df, MASK_RATIO_COL)
+        draw_histogram(df, ABS_ERROR_COL)
+
+    st.caption("※ Outlier는 회귀 기준(2σ)으로 회귀선 대비 크게 벗어난 프레임입니다.")
+
+    a, b = st.columns(2)
+    with a:
+        st.caption("High-error frames (Abs Error 상위 20)")
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ABS_ERROR_COL]
+        if PROC_COL in df.columns:
+            show_cols.append(PROC_COL)
+        _st_dataframe(
+            df.dropna(subset=[ABS_ERROR_COL]).sort_values(ABS_ERROR_COL, ascending=False)[show_cols].head(20),
+            column_config=_column_config_for(show_cols),
+            height=360,
         )
 
+    with b:
+        st.caption("Low-ratio frames (Mask Ratio 하위 20)")
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL]
+        if ABS_ERROR_COL in df.columns:
+            show_cols.append(ABS_ERROR_COL)
+        if PROC_COL in df.columns:
+            show_cols.append(PROC_COL)
+        _st_dataframe(
+            df.sort_values(MASK_RATIO_COL)[show_cols].head(20),
+            column_config=_column_config_for(show_cols),
+            height=360,
+        )
 
 # =============================================================================
-# Part II: 실패 요약 카드 (Failure Flag == 1)
+# Part II: Mask White Ratio ↔ Processing Time (ms)
 
 st.divider()
-st.markdown("## Part II — 실패 요약 카드")
-st.caption("Failure Flag == 1 프레임만 대상으로, 핵심 분포/빈도 지표를 빠르게 요약합니다. (원인 단정 아님)")
+st.markdown(f"""
+## Part II: {MASK_RATIO_COL} ↔ {PROC_COL}
 
-if FAIL_FLAG_COL not in df.columns:
-    st.warning(f"'{FAIL_FLAG_COL}' 컬럼이 없어 실패 요약 카드를 생성할 수 없습니다.")
+처리시간(지연)과 Mask White Ratio가 함께 변하는지 확인합니다.
+- ratio가 극단(매우 낮음/높음)인 구간에서 처리시간이 튀는지
+- 특정 run/조건에서만 지연이 반복되는지
+""")
+
+if PROC_COL not in df.columns:
+    st.info(f"'{PROC_COL}' 컬럼이 없어서 Part II(처리시간 분석)는 생략됩니다.")
 else:
-    # Failure 정의: Failure Flag == 1
-    _fail_s = pd.to_numeric(df[FAIL_FLAG_COL], errors="coerce").fillna(0)
-    _fail_mask = _fail_s.eq(1)
+    model_df2 = perform_linear_regression(df, MASK_RATIO_COL, PROC_COL, sigma_threshold=2.0)
 
-    _n_total = int(len(df))
-    _n_fail = int(_fail_mask.sum())
-    _fail_rate = (_n_fail / _n_total * 100.0) if _n_total > 0 else 0.0
-
-    if _n_fail == 0:
-        st.info("Failure Flag == 1 프레임이 없습니다.")
-    else:
-        _fail_df = df.loc[_fail_mask].copy()
-
-        def _num_series(col: str) -> "pd.Series | None":
-            if col not in _fail_df.columns:
-                return None
-            s = pd.to_numeric(_fail_df[col], errors="coerce").dropna()
-            return s if len(s) else None
-
-        def _top_value(col: str) -> tuple[str, int] | None:
-            if col not in _fail_df.columns:
-                return None
-            vc = _fail_df[col].astype(str).fillna("nan").value_counts()
-            if vc.empty:
-                return None
-            return (str(vc.index[0]), int(vc.iloc[0]))
-
-        # --- 핵심 분포 지표(실패 프레임 기준)
-        abs_s = _num_series(ABS_ERROR_COL)
-        ratio_s = _num_series(MASK_RATIO_COL)
-        proc_s = _num_series(PROC_COL)
-
-        abs_med = float(abs_s.median()) if abs_s is not None else None
-        abs_p95 = float(abs_s.quantile(0.95)) if abs_s is not None else None
-
-        ratio_med = float(ratio_s.median()) if ratio_s is not None else None
-        ratio_p05 = float(ratio_s.quantile(0.05)) if ratio_s is not None else None
-
-        proc_p95 = float(proc_s.quantile(0.95)) if proc_s is not None else None
-
-        # Failure 프레임에서 Lane Error(원값) 기록 여부(결측) 요약
-        _err_raw = pd.to_numeric(_fail_df.get(ERROR_COL), errors="coerce") if ERROR_COL in _fail_df.columns else pd.Series(dtype=float)
-        _err_present_n = int(_err_raw.notna().sum()) if len(_fail_df) else 0
-        _err_missing_rate = float(_err_raw.isna().mean() * 100.0) if len(_fail_df) else None
-
-        ft_top = _top_value(FAIL_TYPE_COL)
-        # --- 1행 카드
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("실패 프레임 수", f"{_n_fail:,}")
-        with c2:
-            st.metric("실패율", f"{_fail_rate:.2f}%")
-        with c3:
-            if ft_top is None:
-                st.metric(f"최다 {FAIL_TYPE_COL}", "N/A")
-            else:
-                st.metric(f"최다 {FAIL_TYPE_COL}", ft_top[0], delta=f"n={ft_top[1]:,}")
-
-        # --- 2행 카드
-        c5, c6, c7, c8 = st.columns(4)
-        with c5:
-            if abs_med is None:
-                st.metric(f"{ERROR_COL} 기록 프레임", f"{_err_present_n:,}")
-            else:
-                st.metric(f"{ABS_ERROR_COL} 중앙값", f"{abs_med:.2f}")
-        with c6:
-            if abs_p95 is None:
-                st.metric(f"{ERROR_COL} 결측률", "N/A" if _err_missing_rate is None else f"{_err_missing_rate:.1f}%")
-            else:
-                st.metric(f"{ABS_ERROR_COL} p95", f"{abs_p95:.2f}")
-        with c7:
-            st.metric(f"{MASK_RATIO_COL} 중앙값", "N/A" if ratio_med is None else f"{ratio_med:.4f}")
-        with c8:
-            # 처리시간이 있으면 p95, 없으면 Mask Ratio p05
-            if proc_p95 is not None:
-                st.metric(f"{PROC_COL} p95", f"{proc_p95:.1f} ms")
-            else:
-                st.metric(f"{MASK_RATIO_COL} p05", "N/A" if ratio_p05 is None else f"{ratio_p05:.4f}")
-
-        if abs_s is None:
-            st.caption(f"참고: 현재 실패 프레임에서 '{ERROR_COL}' 값이 비어 있어 '{ABS_ERROR_COL}' 분위수를 계산할 수 없습니다. 대신 '{ERROR_COL}' 결측 정보를 표시합니다.")
-
-        # --- 상위 분포(빈도) 표(선택)
-        show_freq_tables = st.checkbox("실패 빈도 요약 표 보기", value=False)
-        if show_freq_tables:
-            colA, colB = st.columns(2)
-
-            if ft_top is not None:
-                with colA:
-                    st.markdown(f"### {FAIL_TYPE_COL} 상위")
-                    vc = _fail_df[FAIL_TYPE_COL].astype(str).fillna("nan").value_counts().head(8)
-                    t = pd.DataFrame({
-                        FAIL_TYPE_COL: vc.index,
-                        "count": vc.values,
-                        "rate(%)": (vc.values / _n_fail * 100.0).round(2),
-                    })
-                    _st_dataframe(t, use_container_width=True, hide_index=True)
-
-
-# =============================================================================
-# Reference (collapsed): deviation regression (legacy Part I & II)
-
-
-def _render_reference_deviation_regression(df: pd.DataFrame) -> None:
-    # =============================================================================
-    # Part I: Mask White Ratio ↔ Abs Lane Error
-
-    st.divider()
-    st.markdown(f"""
-    ## Reference I: {MASK_RATIO_COL} ↔ {ABS_ERROR_COL}
-
-    - **Mask White Ratio(0~1)**: 마스크에서 흰 픽셀(0이 아닌 픽셀)이 차지하는 비율(= 검출량/가시성 신호)
-    - **Abs Lane Error**: 화면 중앙 대비 목표 지점의 오차 크기(픽셀)
-    - 둘 사이의 회귀를 진행. 초록색 +로 표기된 데이터는 이상값으로 추정
-
-    가능한 판단:
-    - **ratio↓ & error↑**: 검출량이 부족한 구간에서 조향각이 커지는 패턴
-    - **ratio↑ & error↑**:흰 선이 지나치게 잘 잡히면서 조향각도 큰 패턴(빛 반사/노이즈 영향 가능)
-    """)
-
-    if ABS_ERROR_COL not in df.columns:
-        st.info(f"'{ERROR_COL}'(또는 '{ABS_ERROR_COL}') 컬럼이 없어서 Part I의 Error 기반 분석은 생략됩니다.")
-    else:
-        model_df = perform_linear_regression(df, MASK_RATIO_COL, ABS_ERROR_COL, sigma_threshold=2.0)
-
-        c1, c2 = st.columns([0.7, 0.3])
-        with c1:
-            st.altair_chart(
-                alt.Chart(model_df)
-                .mark_point(filled=True, opacity=0.5)
-                .encode(
-                    x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
-                    y=alt.Y(ABS_ERROR_COL, type="quantitative", scale=alt.Scale(zero=True)),
-                    color=alt.Color("Status:N").legend(None),
-                    shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-                    tooltip=_make_tooltip(model_df, [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ABS_ERROR_COL, "Status"]),
-                )
-                .properties(height=420),
-                use_container_width=True,
+    c1, c2 = st.columns([0.7, 0.3])
+    with c1:
+        st.altair_chart(
+            alt.Chart(model_df2)
+            .mark_point(filled=True, opacity=0.5)
+            .encode(
+                x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y(PROC_COL, type="quantitative", scale=alt.Scale(zero=False)),
+                color=alt.Color("Status:N").legend(None),
+                shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
+                tooltip=_make_tooltip(model_df2, [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL, "Status"]),
             )
-        with c2:
-            draw_histogram(df, MASK_RATIO_COL)
-            draw_histogram(df, ABS_ERROR_COL)
+            .properties(height=420),
+            use_container_width=True,
+        )
+    with c2:
+        draw_histogram(df, PROC_COL)
+        draw_histogram(df, MASK_RATIO_COL)
 
-        st.caption("※ Outlier는 회귀 기준(2σ)으로 회귀선 대비 크게 벗어난 프레임입니다.")
+    a, b = st.columns(2)
+    with a:
+        st.caption("High processing-time frames (상위 20)")
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
+        if ABS_ERROR_COL in df.columns:
+            show_cols.append(ABS_ERROR_COL)
+        _st_dataframe(
+            df.dropna(subset=[PROC_COL]).sort_values(PROC_COL, ascending=False)[show_cols].head(20),
+            column_config=_column_config_for(show_cols),
+            height=360,
+        )
 
-        a, b = st.columns(2)
-        with a:
-            st.caption("High-error frames (Abs Error 상위 20)")
-            show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, ABS_ERROR_COL]
-            if PROC_COL in df.columns:
-                show_cols.append(PROC_COL)
-            _st_dataframe(
-                df.dropna(subset=[ABS_ERROR_COL]).sort_values(ABS_ERROR_COL, ascending=False)[show_cols].head(20),
-                column_config=_column_config_for(show_cols),
-                height=360,
-            )
-
-        with b:
-            st.caption("Low-ratio frames (Mask Ratio 하위 20)")
-            show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL]
-            if ABS_ERROR_COL in df.columns:
-                show_cols.append(ABS_ERROR_COL)
-            if PROC_COL in df.columns:
-                show_cols.append(PROC_COL)
-            _st_dataframe(
-                df.sort_values(MASK_RATIO_COL)[show_cols].head(20),
-                column_config=_column_config_for(show_cols),
-                height=360,
-            )
-
-    # =============================================================================
-    # Part II: Mask White Ratio ↔ Processing Time (ms)
-
-    st.divider()
-    st.markdown(f"""
-    ## Reference II: {MASK_RATIO_COL} ↔ {PROC_COL}
-
-    처리시간(지연)과 Mask White Ratio가 함께 변하는지 확인합니다.
-    - ratio가 극단(매우 낮음/높음)인 구간에서 처리시간이 튀는지
-    - 특정 run/조건에서만 지연이 반복되는지
-    """)
-
-    if PROC_COL not in df.columns:
-        st.info(f"'{PROC_COL}' 컬럼이 없어서 Part II(처리시간 분석)는 생략됩니다.")
-    else:
-        model_df2 = perform_linear_regression(df, MASK_RATIO_COL, PROC_COL, sigma_threshold=2.0)
-
-        c1, c2 = st.columns([0.7, 0.3])
-        with c1:
-            st.altair_chart(
-                alt.Chart(model_df2)
-                .mark_point(filled=True, opacity=0.5)
-                .encode(
-                    x=alt.X(MASK_RATIO_COL, type="quantitative", scale=alt.Scale(domain=[0, 1])),
-                    y=alt.Y(PROC_COL, type="quantitative", scale=alt.Scale(zero=False)),
-                    color=alt.Color("Status:N").legend(None),
-                    shape=alt.Shape("Status:N").scale(range=["circle", "cross"]).legend(None),
-                    tooltip=_make_tooltip(model_df2, [EVENT_ID_COL, RUN_ID_COL, TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL, "Status"]),
-                )
-                .properties(height=420),
-                use_container_width=True,
-            )
-        with c2:
-            draw_histogram(df, PROC_COL)
-            draw_histogram(df, MASK_RATIO_COL)
-
-        a, b = st.columns(2)
-        with a:
-            st.caption("High processing-time frames (상위 20)")
-            show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
-            if ABS_ERROR_COL in df.columns:
-                show_cols.append(ABS_ERROR_COL)
-            _st_dataframe(
-                df.dropna(subset=[PROC_COL]).sort_values(PROC_COL, ascending=False)[show_cols].head(20),
-                column_config=_column_config_for(show_cols),
-                height=360,
-            )
-
-        with b:
-            st.caption("Low processing-time frames (하위 20)")
-            show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
-            if ABS_ERROR_COL in df.columns:
-                show_cols.append(ABS_ERROR_COL)
-            _st_dataframe(
-                df.dropna(subset=[PROC_COL]).sort_values(PROC_COL, ascending=True)[show_cols].head(20),
-                column_config=_column_config_for(show_cols),
-                height=360,
-            )
+    with b:
+        st.caption("Low processing-time frames (하위 20)")
+        show_cols = [TS_COL, WEATHER_COL, TOD_COL, MASK_RATIO_COL, PROC_COL]
+        if ABS_ERROR_COL in df.columns:
+            show_cols.append(ABS_ERROR_COL)
+        _st_dataframe(
+            df.dropna(subset=[PROC_COL]).sort_values(PROC_COL, ascending=True)[show_cols].head(20),
+            column_config=_column_config_for(show_cols),
+            height=360,
+        )
 
 # =============================================================================
 # Part III: Environment summary (optional)
@@ -1854,14 +1618,6 @@ def _render_part_x_openai(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame | Non
         use_container_width=True,
     )
 
-
-
-
-# =============================================================================
-# Reference: Deviation regression (optional)
-st.divider()
-with st.expander("Reference: deviation regression", expanded=False):
-    _render_reference_deviation_regression(df)
 
 # Part X 실행
 try:

@@ -220,75 +220,29 @@ else:
     st.subheader("이 페이지는 https://github.com/chiriem/autodrive_failure_analysis/tree/main/data 의 0115_12_log.csv를 업로드하는 것을 기준으로 제작되었습니다.")
 
     def _generate_demo(n: int = 1200) -> pd.DataFrame:
-        """Generate demo data.
-    
-        - Base columns are synthetic but shaped to resemble typical ranges.
-        - Additional columns (Failure Flag/Type, Lane State, Target CX, Contours*, Direction Force)
-          are populated in a way that mirrors the provided 0115_12_log.csv:
-            * ~10% frames have Failure Flag == 1
-            * For failure frames, the extra columns are populated; otherwise left as NaN.
-        """
         np.random.seed(7)
-    
+
         weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
         tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
-    
-        # Mask White Ratio: 0~1 (mostly low; can be noisier in adverse conditions)
-        base_ratio = np.random.beta(3, 25, n)
+
+        # 마스크 비율 0~1 (차선이 거의 보이지 않을 때 매우 낮음; 눈부심에서 노이즈로 높을 수 있음)
+        base_ratio = np.random.beta(3, 25, n)  # 대부분 작은 비율
         base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
         base_ratio[tod == "Night"] *= 0.8
         mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
-    
-        # Lane Quality Score: 0~100 (not perfectly tied to mask_ratio)
+
+        # 품질 0~100: 비율과 동일하지 않음 (분기 케이스를 볼 수 있도록)
         quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
-        fp = np.random.rand(n) < 0.03  # false positives: ratio high but quality low
+        # 거짓 양성 주입 (비율은 높지만 품질은 낮음)
+        fp = np.random.rand(n) < 0.03
         quality[fp] = np.clip(quality[fp] - 50, 0, 100)
-    
-        # Lane Error (signed); abs is derived later. We will mimic the 0115 log pattern
-        # where failure frames may have Lane Error missing.
+
+        # 품질이 낮을 때 오차 증가
         abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
         err = abs_err * np.random.choice([-1, 1], n)
-    
+
         proc = np.random.normal(28, 5, n)
         mode = np.random.choice(["AUTO", "MANUAL"], n, p=[0.9, 0.1])
-    
-        # Failure Flag: about 10% are failures (exact count for stability)
-        n_fail = max(1, int(round(n * 0.10)))
-        fail_idx = np.random.choice(np.arange(n), size=n_fail, replace=False)
-        fail_flag = np.zeros(n, dtype=int)
-        fail_flag[fail_idx] = 1
-    
-        # Extra/new columns: default NaN; populated only for failure frames
-        lane_state = np.array([np.nan] * n, dtype=object)
-        failure_type = np.array([np.nan] * n, dtype=object)
-        target_cx = np.full(n, np.nan, dtype=float)
-        contours_total = np.full(n, np.nan, dtype=float)
-        contours_kept = np.full(n, np.nan, dtype=float)
-        dir_force = np.full(n, np.nan, dtype=float)
-    
-        # Values informed by the provided 0115_12_log.csv (failure rows only):
-        lane_state[fail_idx] = "none"
-        failure_type[fail_idx] = "area_filtered"
-    
-        # Contours Total distribution observed in failure rows of 0115_12_log.csv
-        _ct_vals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28]
-        _ct_counts = [1, 3, 5, 2, 4, 2, 2, 2, 4, 1, 4, 3, 2, 2, 2, 6, 1, 8, 3, 7, 1, 8, 4, 8, 2]
-        _ct_p = np.array(_ct_counts, dtype=float)
-        _ct_p = _ct_p / _ct_p.sum()
-        contours_total[fail_idx] = np.random.choice(_ct_vals, size=n_fail, p=_ct_p).astype(float)
-    
-        # In the provided log, Contours Kept and Direction Force were 0 for failure rows
-        contours_kept[fail_idx] = 0.0
-        dir_force[fail_idx] = 0.0
-    
-        # Target CX was missing in the provided log (all NaN).
-        # For demo purposes, populate only for failure frames with a plausible center-ish value.
-        # (추측입니다: 실제 센서/화면 폭에 따라 범위는 달라질 수 있음)
-        target_cx[fail_idx] = np.clip(np.random.normal(160, 30, n_fail), 0, 320)
-    
-        # Mimic the observed pattern: Lane Error missing for failure frames in 0115_12_log.csv
-        err[fail_idx] = np.nan
-    
         df = pd.DataFrame({
             TS_COL: np.arange(n) * 100,  # ms
             WEATHER_COL: weather,
@@ -298,26 +252,22 @@ else:
             ERROR_COL: err,
             PROC_COL: proc,
             MODE_COL: mode,
-            FAIL_FLAG_COL: fail_flag,
-            FAIL_TYPE_COL: failure_type,
-            LANE_STATE_COL: lane_state,
-            TARGET_CX_COL: target_cx,
-            CONTOURS_TOTAL_COL: contours_total,
-            CONTOURS_KEPT_COL: contours_kept,
-            DIR_FORCE_COL: dir_force,
         })
-    
-        # Abs Lane Error is derived from Lane Error (sign is meaningless)
-        df[ABS_ERROR_COL] = pd.to_numeric(df[ERROR_COL], errors="coerce").abs()
+        df[ABS_ERROR_COL] = df[ERROR_COL].abs()
         return df
+
     if uploaded_files:
         dfs = []
         for f in uploaded_files:
             try:
                 d = pd.read_csv(f)
-                # Preserve Failure Flag exactly as-is (CSV header uses 'Failure Flag')
+                # Preserve Failure Flag / Failure Type exactly as-is (CSV headers use these exact names)
                 _ff = d['Failure Flag'].to_numpy(copy=True) if 'Failure Flag' in d.columns else None
+                _ft = d['Failure Type'].to_numpy(copy=True) if 'Failure Type' in d.columns else None
+
                 d = _select_fixed_columns(d)
+
+                # Restore dropped columns (no aliasing/normalization; keep exact names)
                 if _ff is not None and 'Failure Flag' not in d.columns:
                     if len(d) == len(_ff):
                         d['Failure Flag'] = _ff
@@ -325,6 +275,13 @@ else:
                         # If row count changed unexpectedly, fall back to index-aligned assign
                         # (should be rare; keeps behavior explicit without broad normalization)
                         d['Failure Flag'] = pd.Series(_ff).reindex(d.index).to_numpy()
+
+                if _ft is not None and 'Failure Type' not in d.columns:
+                    if len(d) == len(_ft):
+                        d['Failure Type'] = _ft
+                    else:
+                        d['Failure Type'] = pd.Series(_ft).reindex(d.index).to_numpy()
+
                 d = _ensure_fields(d)
 
                 safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
