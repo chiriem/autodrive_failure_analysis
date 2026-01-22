@@ -220,45 +220,35 @@ else:
     st.subheader("이 페이지는 https://github.com/chiriem/autodrive_failure_analysis/tree/main/data 의 0115_12_log.csv를 업로드하는 것을 기준으로 제작되었습니다.")
 
     def _generate_demo(n: int = 1200) -> pd.DataFrame:
-        """Generate demo data.
-    
-        - Base columns are synthetic but shaped to resemble typical ranges.
-        - Additional columns (Failure Flag/Type, Lane State, Target CX, Contours*, Direction Force)
-          are populated in a way that mirrors the provided 0115_12_log.csv:
-            * ~10% frames have Failure Flag == 1
-            * For failure frames, the extra columns are populated; otherwise left as NaN.
-        """
         np.random.seed(7)
     
         weather = np.random.choice(["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy"], n)
         tod = np.random.choice(["Day", "Night"], n, p=[0.75, 0.25])
     
-        # Mask White Ratio: 0~1 (mostly low; can be noisier in adverse conditions)
+        # Mask White Ratio: 0~1
         base_ratio = np.random.beta(3, 25, n)
         base_ratio[(weather == "Foggy") | (weather == "Snowy")] *= 0.7
         base_ratio[tod == "Night"] *= 0.8
         mask_ratio = np.clip(base_ratio + np.random.normal(0, 0.01, n), 0, 1)
     
-        # Lane Quality Score: 0~100 (not perfectly tied to mask_ratio)
+        # Lane Quality Score: 0~100
         quality = np.clip((mask_ratio * 180) + np.random.normal(0, 8, n), 0, 100)
-        fp = np.random.rand(n) < 0.03  # false positives: ratio high but quality low
+        fp = np.random.rand(n) < 0.03
         quality[fp] = np.clip(quality[fp] - 50, 0, 100)
     
-        # Lane Error (signed); abs is derived later. We will mimic the 0115 log pattern
-        # where failure frames may have Lane Error missing.
         abs_err = np.clip((100 - quality) * 0.9 + np.random.normal(0, 6, n), 0, None)
         err = abs_err * np.random.choice([-1, 1], n)
     
         proc = np.random.normal(28, 5, n)
         mode = np.random.choice(["AUTO", "MANUAL"], n, p=[0.9, 0.1])
     
-        # Failure Flag: about 10% are failures (exact count for stability)
+        # Failure Flag: about 10% are failures
         n_fail = max(1, int(round(n * 0.10)))
         fail_idx = np.random.choice(np.arange(n), size=n_fail, replace=False)
         fail_flag = np.zeros(n, dtype=int)
         fail_flag[fail_idx] = 1
     
-        # Extra/new columns: default NaN; populated only for failure frames
+        # 실패 케이스에만 생성되는 값들
         lane_state = np.array([np.nan] * n, dtype=object)
         failure_type = np.array([np.nan] * n, dtype=object)
         target_cx = np.full(n, np.nan, dtype=float)
@@ -266,27 +256,20 @@ else:
         contours_kept = np.full(n, np.nan, dtype=float)
         dir_force = np.full(n, np.nan, dtype=float)
     
-        # Values informed by the provided 0115_12_log.csv (failure rows only):
         lane_state[fail_idx] = "none"
-        failure_type[fail_idx] = "area_filtered"
-    
-        # Contours Total distribution observed in failure rows of 0115_12_log.csv
+        failure_type[fail_idx] = np.random.choice(["mask_empty", "area_filtered", "lane_lost"], size=n_fail)
+
         _ct_vals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28]
         _ct_counts = [1, 3, 5, 2, 4, 2, 2, 2, 4, 1, 4, 3, 2, 2, 2, 6, 1, 8, 3, 7, 1, 8, 4, 8, 2]
         _ct_p = np.array(_ct_counts, dtype=float)
         _ct_p = _ct_p / _ct_p.sum()
         contours_total[fail_idx] = np.random.choice(_ct_vals, size=n_fail, p=_ct_p).astype(float)
     
-        # In the provided log, Contours Kept and Direction Force were 0 for failure rows
         contours_kept[fail_idx] = 0.0
         dir_force[fail_idx] = 0.0
     
-        # Target CX was missing in the provided log (all NaN).
-        # For demo purposes, populate only for failure frames with a plausible center-ish value.
-        # (추측입니다: 실제 센서/화면 폭에 따라 범위는 달라질 수 있음)
         target_cx[fail_idx] = np.clip(np.random.normal(160, 30, n_fail), 0, 320)
-    
-        # Mimic the observed pattern: Lane Error missing for failure frames in 0115_12_log.csv
+
         err[fail_idx] = np.nan
     
         df = pd.DataFrame({
@@ -307,7 +290,6 @@ else:
             DIR_FORCE_COL: dir_force,
         })
     
-        # Abs Lane Error is derived from Lane Error (sign is meaningless)
         df[ABS_ERROR_COL] = pd.to_numeric(df[ERROR_COL], errors="coerce").abs()
         return df
     if uploaded_files:
@@ -315,25 +297,13 @@ else:
         for f in uploaded_files:
             try:
                 d = pd.read_csv(f)
-                # Preserve Failure Flag exactly as-is (CSV header uses 'Failure Flag')
                 _ff = d['Failure Flag'].to_numpy(copy=True) if 'Failure Flag' in d.columns else None
-                # Preserve Failure Type exactly as-is (CSV header uses 'Failure Type')
-                _ft = d['Failure Type'].to_numpy(copy=True) if 'Failure Type' in d.columns else None
                 d = _select_fixed_columns(d)
                 if _ff is not None and 'Failure Flag' not in d.columns:
                     if len(d) == len(_ff):
                         d['Failure Flag'] = _ff
                     else:
-                        # If row count changed unexpectedly, fall back to index-aligned assign
-                        # (should be rare; keeps behavior explicit without broad normalization)
                         d['Failure Flag'] = pd.Series(_ff).reindex(d.index).to_numpy()
-                if _ft is not None and 'Failure Type' not in d.columns:
-                    if len(d) == len(_ft):
-                        d['Failure Type'] = _ft
-                    else:
-                        # If row count changed unexpectedly, fall back to index-aligned assign
-                        # (should be rare; keeps behavior explicit without broad normalization)
-                        d['Failure Type'] = pd.Series(_ft).reindex(d.index).to_numpy()
                 d = _ensure_fields(d)
 
                 safe_name = re.sub(r"[^0-9A-Za-z가-힣_\-]+", "_", Path(f.name).stem)[:40]
@@ -432,11 +402,16 @@ else:
     miss_rate = float(err_missing.mean())
     pres_rate = 1.0 - miss_rate
 
-    m1, m2, = st.columns(2)
+    m1, m2, m3 = st.columns(3)
     with m1:
         st.metric("Lane Error missing", f"{miss_rate*100:.1f}%")
     with m2:
         st.metric("Lane Error present", f"{pres_rate*100:.1f}%")
+    with m3:
+        if MODE_COL in df.columns:
+            st.metric("Mode 종류 수", f"{df[MODE_COL].nunique(dropna=True)}")
+        else:
+            st.metric("Mode 종류 수", "N/A")
 
     tab_overview, tab_bins, tab_env = st.tabs(["개요", "Mask Ratio 구간", "환경"])
 
@@ -597,7 +572,8 @@ else:
     # 기본 컬럼(다른 파트에서도 흔히 쓰는 컬럼) + 나머지(신규/추가 컬럼)는 이 테이블에서만 노출
     base_cols = [
         TS_COL,
-        FAIL_TYPE_COL,
+        RUN_ID_COL, ROW_IN_RUN_COL, EVENT_ID_COL,
+        FAIL_FLAG_COL, FAIL_TYPE_COL,
         WEATHER_COL, TOD_COL, MODE_COL,
         QUALITY_COL,
         MASK_RATIO_COL, ERROR_COL, ABS_ERROR_COL, PROC_COL,
@@ -631,7 +607,7 @@ else:
 
 st.divider()
 st.markdown("## Part II — 실패 요약 카드")
-st.caption("Failure Flag == 1 프레임만 대상으로, 핵심 분포/빈도 지표를 빠르게 요약합니다. (원인 단정 아님)")
+st.caption("Failure Flag == 1 프레임만 대상으로, 핵심 분포/빈도 지표를 빠르게 요약합니다.")
 
 if FAIL_FLAG_COL not in df.columns:
     st.warning(f"'{FAIL_FLAG_COL}' 컬럼이 없어 실패 요약 카드를 생성할 수 없습니다.")
@@ -714,20 +690,37 @@ else:
             st.caption(f"참고: 현재 실패 프레임에서 '{ERROR_COL}' 값이 비어 있어 '{ABS_ERROR_COL}' 분위수를 계산할 수 없습니다. 대신 '{ERROR_COL}' 결측 정보를 표시합니다.")
 
         # --- 상위 분포(빈도) 표(선택)
-        show_freq_tables = st.checkbox("실패 빈도 요약 표 보기", value=False)
-        if show_freq_tables:
-            colA, colB = st.columns(2)
+        colA, colB = st.columns(2)
 
-            if ft_top is not None:
-                with colA:
-                    st.markdown(f"### {FAIL_TYPE_COL} 상위")
-                    vc = _fail_df[FAIL_TYPE_COL].astype(str).fillna("nan").value_counts().head(8)
-                    t = pd.DataFrame({
-                        FAIL_TYPE_COL: vc.index,
-                        "count": vc.values,
-                        "rate(%)": (vc.values / _n_fail * 100.0).round(2),
-                    })
-                    _st_dataframe(t, use_container_width=True, hide_index=True)
+        with colA:
+            if FAIL_TYPE_COL not in _fail_df.columns:
+                st.info(f"'{FAIL_TYPE_COL}' 컬럼이 없어 실패 타입 빈도 표를 만들 수 없습니다.")
+            else:
+                st.markdown(f"### {FAIL_TYPE_COL} 상위")
+
+                # Failure Type 상위 8개
+                _ft_s = _fail_df[FAIL_TYPE_COL].astype(str).fillna("nan")
+                vc = _ft_s.value_counts().head(8)
+
+                t = pd.DataFrame({
+                    FAIL_TYPE_COL: vc.index,
+                    "count": vc.values,
+                    "rate(%)": (vc.values / _n_fail * 100.0).round(2),
+                })
+
+                # Failure Type별 Processing Time 평균(ms) 추가
+                if PROC_COL in _fail_df.columns:
+                    _pt_s = pd.to_numeric(_fail_df[PROC_COL], errors="coerce")
+                    _pt_mean_by_ft = (
+                        pd.DataFrame({FAIL_TYPE_COL: _ft_s, "_pt": _pt_s})
+                        .groupby(FAIL_TYPE_COL, dropna=False)["_pt"]
+                        .mean()
+                    )
+                    t["Processing Time 평균(ms)"] = t[FAIL_TYPE_COL].map(_pt_mean_by_ft).round(1)
+                else:
+                    t["Processing Time 평균(ms)"] = np.nan
+
+                _st_dataframe(t, use_container_width=True, hide_index=True)
         # --- Processing Time 평균 비교(정상 vs 실패) - table
         if PROC_COL in df.columns:
             _proc_all = pd.to_numeric(df[PROC_COL], errors="coerce")
@@ -977,7 +970,7 @@ st.divider()
 st.markdown("""
 ## Part IV: 이상치 후보(자동 기준 + 민감도 1개)
 
-이 파트는 “원인 확정”이 아니라, **확인 우선순위를 정하기 위한 후보 추출**입니다.
+이 파트는 **확인 우선순위를 정하기 위한 후보 추출**입니다.
 
 - **Mask White Ratio**: 하위 꼬리(매우 낮음) / 상위 꼬리(매우 높음)
 - **Abs Lane Error**: 상위 꼬리(오차 과다) *(컬럼이 있을 때만)*
@@ -1395,9 +1388,9 @@ def _render_part_x_distribution(df: pd.DataFrame, pctl: int, cand: "pd.DataFrame
 
     if low_th is not None:
         rows.append({"항목": f"Mask Ratio 하한(하위 {100 - pctl}% 분위)", "값": f"{low_th:.4f}", "의미": "차선 픽셀량이 매우 낮은 꼬리 구간 기준"})
-        rows.append({"항목": "Mask Ratio 하한 이하 비율", "값": f"{low_rate:.2f}%", "의미": "저가시성/미검출 후보 비중(단정 금지)"})
+        rows.append({"항목": "Mask Ratio 하한 이하 비율", "값": f"{low_rate:.2f}%", "의미": "저가시성/미검출 후보 비중"})
         rows.append({"항목": f"Mask Ratio 상한(상위 {100 - pctl}% 분위)", "값": f"{high_th:.4f}", "의미": "차선 픽셀량이 매우 높은 꼬리 구간 기준"})
-        rows.append({"항목": "Mask Ratio 상한 이상 비율", "값": f"{high_rate:.2f}%", "의미": "과검출 후보 비중(원인은 '추측'이며 영상 확인 필요)"})
+        rows.append({"항목": "Mask Ratio 상한 이상 비율", "값": f"{high_rate:.2f}%", "의미": "과검출 후보 비중"})
 
     if metrics["err_missing_rate"] is not None:
         rows.append({"항목": "Lane Error 결측률", "값": f"{metrics['err_missing_rate']:.2f}%", "의미": "오차 기반 분석/모니터링이 불가한 구간 비중"})
@@ -1815,7 +1808,7 @@ def _build_partx_report(metrics: dict, pctl: int, llm: dict | None) -> str:
 
     lines.append("")
     lines.append("## 4) 메모")
-    lines.append("- 이 보고서는 분포 기반 자동 요약이며, 원인 확정이 아닙니다. 필요 시 원본 프레임(영상) 확인이 필요합니다.")
+    lines.append("- 이 보고서는 분포 기반 자동 요약이며, 원인 확정이 아닙니다. 필요 시 원본 프레임 확인이 필요합니다.")
     lines.append("")
     return "\n".join(lines).strip() + "\n"
 
