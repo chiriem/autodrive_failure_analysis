@@ -303,11 +303,16 @@ def render() -> None:
             bin_summary["missing_%"] = (bin_summary["missing"] / bin_summary["frames"] * 100).replace([np.inf, -np.inf], np.nan)
             bin_summary["missing_%"] = bin_summary["missing_%"].round(2)
 
+            bin_summary["ratio_bin"] = bin_summary["ratio_bin"].apply(
+                lambda v: np.nan if pd.isna(v)
+                else f"{str(v).strip('()[]').split(',')[0].strip()}~{str(v).strip('()[]').split(',')[1].strip()}"
+            )
+
             st.altair_chart(
                 alt.Chart(bin_summary.dropna(subset=["ratio_bin"]))
                 .mark_bar()
                 .encode(
-                    x=alt.X("ratio_bin:N", title="Mask White Ratio bin", sort=None),
+                    x=alt.X("ratio_bin:N", title="Mask White Ratio bin", sort=None, axis=alt.Axis(labelAngle=0)),
                     y=alt.Y("missing_%:Q", title="Lane Error missing (%)", scale=alt.Scale(domain=[0, 100])),
                     tooltip=[
                         alt.Tooltip("ratio_bin:N", title="bin"),
